@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>GENRA BOX</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="stage"></div>
+<script>
+  // in the app the bridge is window.GB (MainActivity); in a desktop browser the test server brings its own
+  if (!window.GB) document.write('<script src="/dev/devbridge.js"><\/script>');
+</script>
+<script src="app.js"></script>
+</body>
+</html>

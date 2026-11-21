@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- GENRA BOX: four lanes in the track colours, as the box's display -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#7B6CFF" android:pathData="M30,34h10v8h-10z M44,34h10v8h-10z M58,34h10v8h-10z M72,34h6v8h-6z" />
+    <path android:fillColor="#B8F23A" android:pathData="M30,46h10v8h-10z M58,46h10v8h-10z" />
+    <path android:fillColor="#3DC9FF" android:pathData="M44,58h10v8h-10z M72,58h6v8h-6z" />
+    <path android:fillColor="#E0779E" android:pathData="M30,70h24v8h-24z" />
+</vector>
