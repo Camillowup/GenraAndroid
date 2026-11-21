@@ -1,8 +1,8 @@
-.gradle/
-build/
-app/build/
-app/.cxx/
-local.properties
+/.gradle/
+/build/
+/app/build/
+/app/.cxx/
+/local.properties
 *.iml
-.idea/
-tools/devserver/build/
+/.idea/
+/tools/devserver/build/
