@@ -10,4 +10,11 @@ Gesammelt für den nächsten Build (gebaut wird erst auf „bauen“):
   VEL-Spur), Drum-Raster mit 8 Zeilen; 2 Takte pro Ansicht, blättern mit < BAR / BAR >; VEL, CHANCE, SLIDE bzw. ROLL;
   UNDO, REDO, COPY BAR, PASTE, CLEAR, NEW, Länge pro Spur. Entwürfe: genra_box_android_7/8/9.
 
+- **Ableton Link** (nur auf SETUP, nicht auf der BOX-Seite): LINK an/aus mit Anzahl Geräte, Start/Stop-Sync,
+  Ausgleich der Verzögerung (auch für Bluetooth). Ableton Link ist GPLv2+, passt zur GPL-3 der App. Entwurf noch zeigen.
+
+Vorgeschlagen, noch nicht entschieden: UNDO für NEW/NEW ALL, LOCK pro Spur, Projekte (mehrere Songs), Wiedergabe im
+Hintergrund, WAV-Export, Mixer-Seite, PLAY-Seite, PERFORM-Seite, FILL zum Halten, Erklärung bei langem Drücken,
+Vibration, DICE auf den Synth-Seiten.
+
 Später: MIDI über USB (Controller), REC im GRID.
