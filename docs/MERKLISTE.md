@@ -16,8 +16,9 @@ Gesammelt für den nächsten Build (gebaut wird erst auf „bauen“):
 - **UNDO** (NEW, NEW ALL, Genre-Wechsel; mehrfach), **LOCK pro Spur** (neben PATTERN; der Akkord-LOCK heisst jetzt
   CHORDS), **Projekte** (Name unter dem Titel; NEW, SAVE AS, RENAME, DUPLICATE, DELETE). Entwürfe 10–12.
 - **PERFORM-Seite** (wichtiger als PLAY, Entwurf 13): 16 Effekt-Pads zum Halten (REPEAT, FILTER, TIME, COLOR),
-  Doppeltipp = LATCH, XY-Feld, Ziel-Spuren, MUTE, DJ-EQ mit KILL, FILL und BREAK zum Halten. Noch nicht festgelegt,
-  in welchen Build.
+  Doppeltipp = LATCH, XY-Feld, Ziel-Spuren, MUTE, DJ-EQ mit KILL, FILL und BREAK zum Halten. Kommt in den nächsten
+  Build als Testversion; lange drücken auf ein Pad = Effekt wählen. Er probiert die Effekte aus und sagt danach, was
+  anders soll (z. B. TAPE STOP evtl. länger).
 - **PLAY-Seite** (nach hinten): Tasten in Tonart/Skala, LIVE pro Spur (GENRAs Noten schweigen, Pattern bleibt), REC.
 
 Vorgeschlagen, noch nicht entschieden: Wiedergabe im
