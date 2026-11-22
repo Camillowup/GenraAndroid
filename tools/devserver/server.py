@@ -7,9 +7,10 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI = os.path.join(HERE, '..', '..', 'app', 'src', 'main', 'assets', 'ui')
 lib = ctypes.CDLL(os.path.join(HERE, 'build', 'libgenrabox-dev.so'))
-for n in ('gb_meta', 'gb_state', 'gb_fast'):
+for n in ('gb_meta', 'gb_state', 'gb_fast', 'gb_grid_state', 'gb_projects'):
     getattr(lib, n).restype = ctypes.c_void_p
 lib.gb_state.argtypes = [ctypes.c_int]
+lib.gb_grid_state.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
 lib.gb_cmd.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_float]
 lib.gb_render.restype = ctypes.c_float
 lib.gb_free.argtypes = [ctypes.c_void_p]
@@ -47,6 +48,12 @@ class H(BaseHTTPRequestHandler):
                 if p == '/api/savePreset':
                     lib.gb_save_preset(int(q['t']), q.get('name', '').encode()); return self.send('')
                 if p == '/api/save': lib.gb_save(); return self.send('')
+                if p == '/api/gridState': return self.send(text(lib.gb_grid_state(int(q['t']), int(q['f']), int(q['n']))))
+                if p == '/api/gridWrite':
+                    lib.gb_grid_write(int(q['t']), q.get('js', '').encode()); return self.send('')
+                if p == '/api/projects': return self.send(text(lib.gb_projects()))
+                if p == '/api/project':
+                    lib.gb_project(int(q['w']), q.get('a', '').encode()); return self.send('')
                 if p == '/api/export':
                     buf = ctypes.create_string_buffer(1 << 20)
                     n = lib.gb_export(int(q['w']), int(q['i']), buf, 1 << 20)

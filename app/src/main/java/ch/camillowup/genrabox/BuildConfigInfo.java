@@ -3,7 +3,7 @@ package ch.camillowup.genrabox;
 
 /** The version shown on the SETUP page (keep in step with app/build.gradle versionName). */
 final class BuildConfigInfo {
-    static final String VERSION = "1.0.0";
+    static final String VERSION = "1.1.0";
 
     private BuildConfigInfo() {}
 }

@@ -17,5 +17,9 @@
     audioInfo: () => 'DESKTOP TEST SERVER (NO SOUND)',
     version: () => 'dev',
     exportMidi: (w, i) => get(`/api/export?w=${w}&i=${i}`),
+    gridState: (t, f, n) => get(`/api/gridState?t=${t}&f=${f}&n=${n}`),
+    gridWrite: (t, js) => { get(`/api/gridWrite?t=${t}&js=${q(js)}`); },
+    projects: () => get('/api/projects'),
+    project: (w, a) => { get(`/api/project?w=${w}&a=${q(a)}`); },
   };
 })();

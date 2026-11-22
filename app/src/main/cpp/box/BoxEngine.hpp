@@ -17,6 +17,11 @@
 #include "../genra-src/mono/MonoPresets.hpp"
 #include "../genra-src/schmelz/SchmelzPresets.hpp"
 #include "../drumx/jiantcore/drumcore.h"
+#include "PerformFx.hpp"
+
+#ifdef GENRA_LINK
+#include <ableton/Link.hpp>
+#endif
 
 namespace gbox {
 
@@ -34,6 +39,13 @@ enum Op {
 	OP_AB_PART = 50, OP_AB_PAD = 51, OP_AB_UNDO = 52, OP_AB_CLEAR = 53, OP_AB_MODE = 54, OP_AB_SONG = 55,
 	OP_AB_NEXT = 56,
 	OP_PRESET_DELETE = 61,
+	// 1.1: undo, key / scale, track locks, grid, perform, Ableton Link
+	OP_UNDO = 7, OP_REDO = 8, OP_SCALE = 19, OP_TLOCK = 36,
+	OP_G_DRUM = 70, OP_G_DRUMRAT = 71, OP_G_DRUMCH = 72, OP_G_COPY = 73, OP_G_PASTE = 74, OP_G_CLEAR = 75,
+	OP_G_LEN = 76, OP_G_MARK = 77,
+	OP_PF_PAD = 80, OP_PF_LATCH = 81, OP_PF_X = 82, OP_PF_Y = 83, OP_PF_XYUP = 84, OP_PF_TARGET = 85, OP_PF_EQ = 86,
+	OP_PF_KILL = 87, OP_PF_FILL = 88, OP_PF_BREAK = 89, OP_PF_ASSIGN = 90, OP_PF_RESET = 91,
+	OP_LINK_ON = 95, OP_LINK_SS = 96, OP_LINK_OFFSET = 97,
 };
 
 /** One knob / switch / list of a synth page. */
@@ -91,6 +103,24 @@ public:
 	void saveSession();
 	std::string message();
 
+	// GRID: the notes / hits of a track in a window of steps (JSON); writing a track's notes (JSON list of
+	// [start, len, pitch, vel, slide, chance]) replaces its notes in the loop
+	std::string gridState(int track, int fromStep, int nSteps);
+	void gridWrite(int track, const std::string& json);
+
+	// projects (files in filesDir/projects)
+	std::string projects();
+	void projectOpen(const std::string& id);
+	void projectNew();
+	void projectSaveAs(const std::string& name);
+	void projectRename(const std::string& name);
+	void projectDuplicate(const std::string& id);
+	void projectDelete(const std::string& id);
+
+	/** The output's latency (Ableton Link lines up what is heard). */
+	void setOutputLatency(double seconds);
+	bool linkOn() const { return linkEnabled; }
+
 private:
 	std::recursive_mutex mtx;
 	float sr = 48000.f;
@@ -107,6 +137,8 @@ private:
 	int lengthIdx = 2;              // 1 2 4 8 bars
 	float bpm = 120.f;
 	bool chordLock = false;
+	int scaleSel = -1;              // -1: the genre's scale (AUTO), else SCALES[]
+	bool trackLock[NUM_TRACKS] = {false, false, false, false};
 	float density[NUM_TRACKS] = {0.5f, 0.5f, 0.5f, 0.5f};
 	float fillK = 0.3f, moveK = 0.5f, rangeK = 0.5f, voicingK = 0.5f;
 
@@ -236,6 +268,46 @@ private:
 
 	int stateVer = 1;
 	std::mutex fileMtx;             // one session write at a time
+
+	// ---------------------------------------------------------------- UNDO / REDO of the pattern (BOX and GRID)
+	struct PatSnap {
+		Pattern pat;
+		int trackSel[NUM_TRACKS];
+		int preset[NUM_TRACKS];
+		std::vector<float> vals[NUM_TRACKS];
+	};
+	std::vector<std::shared_ptr<PatSnap>> undoStack, redoStack;
+	std::shared_ptr<PatSnap> takeSnap();
+	void restoreSnap(const PatSnap& s);
+	void pushUndo();
+	BarClip clip;
+
+	// ---------------------------------------------------------------- PERFORM
+	PerformFx pfx;
+	unsigned pfTarget = 0x3;        // the tracks the effects work on (bit per track)
+	bool fillHold = false, breakHold = false;
+
+	// ---------------------------------------------------------------- projects
+	std::string projId, projName = "PROJECT 1";
+	std::string projectPath(const std::string& id) const;
+	std::vector<uint8_t> sessionBytes();
+	bool sessionFromBytes(const std::vector<uint8_t>& d);
+	void resetFresh();
+	void saveSettings();
+	void loadSettings();
+	std::string newId();
+
+	// ---------------------------------------------------------------- Ableton Link
+	bool linkEnabled = false, linkStartStop = true;
+	float linkOffsetMs = 0.f;
+	double outLatency = 0.01;
+	int linkPeers = 0;
+#ifdef GENRA_LINK
+	std::unique_ptr<ableton::Link> link;
+	bool linkWasPlaying = false, linkTempoDirty = false, linkStartReq = false, linkStopReq = false;
+#endif
+	double lastPh = -1.0, lastLinkBeat = 0.0;
+	bool linkArmed = false;         // PLAY with Link: the box starts at the next bar line
 
 	// ---------------------------------------------------------------- helpers
 	void changed() { stateVer++; }

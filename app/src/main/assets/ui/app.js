@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // GENRA BOX for Android – the panel. Everything plays in the native engine (window.GB, MainActivity.Bridge); this page
-// draws the seven pages, sends the commands and shows the engine's state (polled ~20 times a second).
+// draws the nine pages, sends the commands and shows the engine's state (polled ~20 times a second).
 'use strict';
 
 // ---- the commands (the same numbers as gbox::Op in cpp/box/BoxEngine.hpp)
@@ -12,6 +12,11 @@ const OP = {
   DX_SND: 40, DX_KIT: 41, DX_LANEMUTE: 42,
   AB_PART: 50, AB_PAD: 51, AB_UNDO: 52, AB_CLEAR: 53, AB_MODE: 54, AB_SONG: 55, AB_NEXT: 56,
   PRESET_DELETE: 61,
+  UNDO: 7, REDO: 8, SCALE: 19, TLOCK: 36,
+  G_DRUM: 70, G_DRUMRAT: 71, G_DRUMCH: 72, G_COPY: 73, G_PASTE: 74, G_CLEAR: 75, G_LEN: 76, G_MARK: 77,
+  PF_PAD: 80, PF_LATCH: 81, PF_X: 82, PF_Y: 83, PF_XYUP: 84, PF_TARGET: 85, PF_EQ: 86, PF_KILL: 87, PF_FILL: 88,
+  PF_BREAK: 89, PF_ASSIGN: 90, PF_RESET: 91,
+  LINK_ON: 95, LINK_SS: 96, LINK_OFFSET: 97,
 };
 // DRUM-X core parameters (drumcore.h)
 const JDX = { MORPH: 0, TUNE: 1, TONE: 2, DECAY: 3, NOISE: 4, FMENV: 5, FOLD: 6, DRIVE: 7, LN0: 8, DIST: 16, DLY: 17, REV: 18, LEVEL: 19 };
@@ -252,7 +257,7 @@ function chip(parent, x0, y0, x1, y1, label, fn, o = {}) {
   e.setOn = (on, col) => {
     e.classList.toggle('on', !!on);
     e.style.background = on ? (col || C.white) : C.disp;
-    if (!on) e.style.color = o.color || C.dim;
+    e.style.color = on ? '#111216' : (o.color || C.dim);
   };
   return e;
 }
@@ -349,14 +354,15 @@ function pickPreset(t) {
 }
 
 // ================================================================ header and tabs
-const TABS = [['BOX', null], ['ABLAUF', null], ['DRUM-X', TC[0]], ['MONO', TC[1]], ['FUNKE', TC[2]], ['SCHMELZ', TC[3]], ['SETUP', null]];
+const TABS = [['BOX', null], ['ABLAUF', null], ['PERFORM', null], ['GRID', null], ['DRUM-X', TC[0]], ['MONO', TC[1]],
+  ['FUNKE', TC[2]], ['SCHMELZ', TC[3]], ['SETUP', null]];
 const tabEls = {};
 function header(p, sub) {
   text(p, 34, 24, 'GENRA BOX', 46, '#f0f1f4', { weight: 800, sp: 6 });
-  text(p, 36, 82, sub, 17, C.dim, { weight: 600, sp: 4 });
-  const x0 = 640, w = (2376 - 640 - 6 * 12) / 7;
+  if (sub) text(p, 36, 82, sub, 17, C.dim, { weight: 600, sp: 4 });
+  const x0 = 560, gap = 10, w = (2376 - x0 - (TABS.length - 1) * gap) / TABS.length;
   TABS.forEach(([name, col], i) => {
-    const e = el('div', 'tab', p, { left: px(x0 + i * (w + 12)), width: px(w) });
+    const e = el('div', 'tab', p, { left: px(x0 + i * (w + gap)), width: px(w), fontSize: '22px', letterSpacing: '2px' });
     e.textContent = name;
     if (col) { const b = el('div', 'bar', e); b.style.background = col; }
     onTap(e, () => show(name));
@@ -375,11 +381,118 @@ function show(name) {
     }
 }
 
+// ================================================================ KEY and SCALE, projects
+function shortScale(n) {
+  return upper(n || '').replace('HARM. MINOR', 'HARM MIN').replace('MAJOR PENTA', 'MAJ PENTA').replace('MINOR PENTA', 'MIN PENTA')
+    .replace('DBL. HARMONIC', 'DBL HARM').replace('PHRYG. DOM.', 'PHR DOM').replace('MIXOLYDIAN', 'MIXOLYD');
+}
+function closeChip(bx, sh) {
+  const close = chip(bx, 0, 0, 160, 60, 'CLOSE', () => sh.remove());
+  close.className = 'chip close'; close.style.left = ''; close.style.right = '24px'; close.style.top = '22px';
+  return close;
+}
+function openKeyScale() {
+  const sh = el('div', 'sheet', stage);
+  const bx = el('div', 'box', sh);
+  const t = el('div', 'title', bx); t.textContent = 'KEY AND SCALE';
+  closeChip(bx, sh);
+  cap(bx, 40, 110, 'KEY');
+  const keys = [], scales = [];
+  meta.notes.forEach((n, i) => {
+    const c = chip(bx, 40 + i * 160, 140, 40 + i * 160 + 146, 226, n, () => cmd(OP.KEY, i));
+    c.style.fontSize = '30px';
+    keys.push(c);
+  });
+  cap(bx, 40, 270, 'SCALE');
+  const opts = [[-1, 'AUTO', 'THE GENRE: ' + upper(st.genreScale)]].concat(meta.scales.map((n, i) => [i, upper(n), i === 0 ? 'DUR' : i === 1 ? 'MOLL' : '']));
+  opts.forEach(([v, n, sub], k) => {
+    const r = Math.floor(k / 4), c = k % 4, x = 40 + c * 480, y = 300 + r * 120;
+    const e = chip(bx, x, y, x + 460, y + 100, '', () => cmd(OP.SCALE, v));
+    Object.assign(e.style, { justifyContent: 'center', flexDirection: 'column', alignItems: 'flex-start', padding: '0 22px' });
+    const a = el('div', null, e, { fontSize: '26px', color: C.txt, letterSpacing: '2px' }); a.textContent = n;
+    if (sub) { const b = el('div', null, e, { fontSize: '16px', color: C.dim, fontWeight: 600, letterSpacing: '2px', marginTop: '8px' }); b.textContent = sub; }
+    scales.push([v, e]);
+  });
+  sh.addEventListener('pointerdown', ev => { if (ev.target === sh) sh.remove(); });
+  const upd = () => {
+    if (!sh.isConnected) return;
+    keys.forEach((c, i) => { c.setOn(i === st.key, C.yellow); if (i !== st.key) c.style.color = C.txt; });
+    scales.forEach(([v, e]) => { const on = v === st.scaleSel; e.style.background = on ? '#2b2d35' : C.disp; e.style.borderColor = on ? C.white : '#2c2e36'; });
+    setTimeout(upd, 120);
+  };
+  upd();
+}
+
+function fmtTime(t) {
+  const d = new Date(t * 1000), now = new Date();
+  const M = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  if (d.toDateString() === now.toDateString()) return 'TODAY ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  return d.getDate() + ' ' + M[d.getMonth()] + ' ' + d.getFullYear();
+}
+function openProjects() {
+  call('save');
+  let data;
+  try { data = JSON.parse(call('projects') || '{}'); } catch (e) { data = { list: [] }; }
+  const sh = el('div', 'sheet', stage);
+  const bx = el('div', 'box', sh);
+  const t = el('div', 'title', bx); t.textContent = 'PROJECTS';
+  const HINT = 'TAP A PROJECT: OPEN IT (THE ONE THAT PLAYS IS SAVED FIRST)  \u00b7  EVERYTHING IS SAVED BY ITSELF';
+  let delMode = false, del = null;
+  const reopen = () => { sh.remove(); setTimeout(openProjects, 60); };
+  const hint = text(bx, 40, 905, HINT, 17, C.dim, { weight: 600, sp: 2 });
+  const btns = [
+    ['NEW', C.green, () => { call('project', 1, ''); reopen(); }],
+    ['SAVE AS', null, () => { sh.remove(); openName('SAVE AS', st.project, n => { call('project', 2, n); openProjects(); }); }],
+    ['RENAME', null, () => { sh.remove(); openName('RENAME', st.project, n => { call('project', 3, n); openProjects(); }); }],
+    ['DUPLICATE', null, () => { call('project', 4, data.current); reopen(); }],
+    ['DELETE', C.red, () => {
+      delMode = !delMode;
+      del.setOn(delMode, C.red);
+      hint.textContent = delMode ? 'DELETE: TAP A PROJECT, THEN TAP IT AGAIN' : HINT;
+    }],
+  ];
+  btns.forEach(([n, col, fn], i) => {
+    const x = 560 + i * 236;
+    const c = chip(bx, x, 22, x + 220, 82, n, fn, col ? { color: col, border: col } : {});
+    if (n === 'DELETE') del = c;
+  });
+  closeChip(bx, sh);
+  const list = el('div', 'list', bx, { top: '110px', bottom: '80px' });
+  for (const pr of data.list || []) {
+    const cur = pr.id === data.current;
+    const e = el('div', 'opt', list, { width: 'calc(33.33% - 16px)', height: '150px' });
+    if (cur) { e.style.borderColor = C.white; e.style.background = '#2b2d35'; }
+    const a = el('div', 'a', e, { fontSize: '30px', top: '20px' }); a.textContent = pr.name;
+    const info = upper(pr.genre) + ' \u00b7 ' + Math.round(pr.bpm) + ' BPM' + (pr.pads ? ' \u00b7 ' + pr.pads + ' PADS' : '') + (pr.bars ? ' \u00b7 SONG ' + pr.bars + ' BARS' : '');
+    const b = el('div', 'b', e, { top: '68px', fontSize: '17px' }); b.textContent = info;
+    const d = el('div', 'b', e, { top: '102px', fontSize: '16px', color: cur ? C.green : C.dim }); d.textContent = fmtTime(pr.time) + (cur ? '  \u00b7  OPEN' : '');
+    let armed = false, y0 = 0, moved = false;
+    e.addEventListener('pointerdown', ev => { y0 = ev.clientY; moved = false; });
+    e.addEventListener('pointermove', ev => { if (Math.abs(ev.clientY - y0) > 12) moved = true; });
+    e.addEventListener('pointerup', () => {
+      if (moved) return;
+      if (delMode) {
+        if (cur) { say('The open project can\u2019t be deleted'); return; }
+        if (!armed) { armed = true; e.style.borderColor = C.red; d.textContent = 'TAP AGAIN TO DELETE'; d.style.color = C.red; return; }
+        call('project', 5, pr.id); reopen(); return;
+      }
+      sh.remove();
+      if (!cur) call('project', 0, pr.id);
+    });
+  }
+  sh.addEventListener('pointerdown', ev => { if (ev.target === sh) sh.remove(); });
+}
+
 // ================================================================ page BOX
 const box = {};
 function buildBox() {
   const p = pages.BOX = el('div', 'page', stage);
-  header(p, 'GENRA · GROOVEBOX');
+  header(p, null);
+  // the project (a tap: the list of projects)
+  const pj = el('div', 'abs', p, { left: '32px', top: '78px', width: '438px', height: '28px', background: C.disp, border: '2px solid #2c2e36', borderRadius: '6px' });
+  box.proj = text(pj, 10, 5, 'PROJECT', 16, C.txt, { weight: 600, sp: 3 });
+  const pc = chevron(C.txt, 16); pc.style.position = 'absolute'; pc.style.right = '10px'; pc.style.top = '9px'; pj.appendChild(pc);
+  onTap(pj, openProjects);
   plate(p, 24, 120, 560, 1056);
   box.genre = new Drop(p, 44, 136, 540, 196, { open: pickGenre });
   // the display
@@ -388,9 +501,18 @@ function buildBox() {
   box.bpm = text(bpmBox, 14, 10, '120', 52, '#f0f1f4', { weight: 800, sp: 0 });
   text(bpmBox, 116, 38, 'BPM', 18, C.dim, { sp: 2 });
   bindBpm(bpmBox);
-  el('div', 'abs', p, { left: '272px', top: '246px', width: '16px', height: '16px', borderRadius: '50%', background: C.green });
-  text(p, 296, 244, 'INT', 20, C.green, { sp: 3 });
-  box.keyLine = text(p, 66, 318, 'A MINOR · 4 BARS', 20, C.dim, { weight: 600, sp: 3 });
+  // KEY and SCALE (a tap: the choice of both)
+  const field = (x0, x1, lab) => {
+    const f = el('div', 'abs', p, { left: px(x0), top: '224px', width: px(x1 - x0), height: '78px', background: '#0d0e11', border: '3px solid ' + C.yellow, borderRadius: '8px' });
+    text(f, 10, 6, lab, 14, C.dim, { weight: 600, sp: 2 });
+    const v = text(f, 10, 30, '', 26, '#f0f1f4', { sp: 1 });
+    const cv = chevron(C.yellow, 16); cv.style.position = 'absolute'; cv.style.right = '8px'; cv.style.top = '10px'; f.appendChild(cv);
+    onTap(f, openKeyScale);
+    return v;
+  };
+  box.keyV = field(266, 372, 'KEY');
+  box.scaleV = field(384, 524, 'SCALE');
+  box.keyLine = text(p, 66, 318, '', 20, C.dim, { weight: 600, sp: 2 });
   box.cells = [];
   for (let t = 0; t < 4; t++) {
     box.cells.push([]);
@@ -402,7 +524,7 @@ function buildBox() {
   box.barTxt.style.transform = 'translateX(-100%)';
   box.status = text(p, 66, 482, 'SOUND: SAME GENRE', 20, C.yellow, { sp: 3 });
   // generator
-  box.key = new Knob(p, 130, 600, 40, 'KEY', { min: 0, max: 11, def: 9, steps: 12, fmt: v => meta.notes[Math.round(v)], change: v => cmd(OP.KEY, Math.round(v)) });
+  box.duck = new Knob(p, 130, 600, 40, 'DUCK', { def: 0, change: v => cmd(OP.DUCK, 0, 0, v) });
   box.color = new Knob(p, 285, 600, 40, 'COLOR', { def: 0.5, change: v => cmd(OP.COLOR, 0, 0, v) });
   box.swing = new Knob(p, 440, 600, 40, 'SWING', { min: -1, max: 1, def: 0, fmt: v => v === 0 ? 'GENRE' : bip(v), change: v => cmd(OP.SWING, 0, 0, v) });
   box.length = new Knob(p, 130, 745, 40, 'LENGTH', { min: 0, max: 3, def: 2, steps: 4, fmt: v => [1, 2, 4, 8][Math.round(v)] + ' BARS', change: v => cmd(OP.LENGTH, Math.round(v)) });
@@ -411,14 +533,16 @@ function buildBox() {
   box.play = new Btn(p, 110, 885, 46, 'PLAY', { color: C.green, tap: () => cmd(OP.PLAY) });
   box.stop = new Btn(p, 240, 885, 46, 'STOP', { tap: () => cmd(OP.STOP) });
   box.newAll = new Btn(p, 370, 885, 46, 'NEW ALL', { tap: () => { cmd(OP.NEWALL); flash(box.newAll, C.white); } });
-  box.lock = new Btn(p, 490, 885, 36, 'LOCK', { color: C.white, tap: () => cmd(OP.LOCK) });
-  box.sound = chip(p, 44, 996, 290, 1046, 'SOUND', () => {
+  box.lock = new Btn(p, 490, 885, 36, 'CHORDS', { color: C.white, tap: () => cmd(OP.LOCK) });
+  box.sound = chip(p, 44, 996, 214, 1046, 'SOUND', () => {
     // three states: SAME GENRE -> ALL GENRES -> OFF -> SAME GENRE
     if (!st.soundOn) { cmd(OP.SOUND); if (st.soundAll !== 2) cmd(OP.SOUNDMODE); }
     else if (st.soundAll === 2) cmd(OP.SOUNDMODE);
     else cmd(OP.SOUND);
   }, { color: C.yellow, border: '#2c2e36' });
-  chip(p, 300, 996, 540, 1046, 'MIDI EXPORT', () => say(call('exportMidi', 0, 0) || ''));
+  box.undo = chip(p, 224, 996, 374, 1046, 'UNDO', () => cmd(OP.UNDO));
+  chip(p, 384, 996, 540, 1046, 'MIDI', () => say(call('exportMidi', 0, 0) || ''));
+  box.sound.style.fontSize = '18px'; box.undo.style.fontSize = '18px';
 
   // the four tracks
   const cw = (2400 - 584 - 24 - 3 * 16) / 4;
@@ -430,15 +554,17 @@ function buildBox() {
     const nm = text(p, (x0 + x1) / 2, 146, TNAME[t], 32, c, { center: true, weight: 800, sp: 8 });
     onTap(nm, () => show(['DRUM-X', 'MONO', 'FUNKE', 'SCHMELZ'][t]));
     cap(p, x0 + 20, 200, 'PATTERN');
-    T.genre = new Drop(p, x0 + 18, 228, x1 - 18, 290, { color: c, open: () => pickTrackGenre(t) });
+    T.lock = chip(p, x1 - 140, 190, x1 - 18, 222, 'LOCK', () => cmd(OP.TLOCK, t), { color: c, border: c });
+    T.lock.style.fontSize = '17px';
+    T.genre = new Drop(p, x0 + 18, 232, x1 - 18, 294, { color: c, open: () => pickTrackGenre(t) });
     const q = (cw - 36) / 4;
-    T.dens = new Knob(p, x0 + 18 + q * 0.5, 368, 40, null, { def: 0.5, title: TSPUR[t] + ' DENSITY', change: v => cmd(OP.DENS, t, 0, v) });
-    T.k2 = new Knob(p, x0 + 18 + q * 1.5, 368, 40, null, { def: t === 0 ? 0.3 : 0.5, title: TSPUR[t] + ' ' + TK2[t], change: v => cmd(OP.TK2, t, 0, v) });
-    text(p, x0 + 18 + q * 0.5, 428, 'DENSITY', 18, C.txt, { center: true, sp: 1 });
-    text(p, x0 + 18 + q * 1.5, 428, TK2[t], 18, C.txt, { center: true, sp: 1 });
-    T.nw = new Btn(p, x0 + 18 + q * 2.5, 368, 38, 'NEW', { color: c, tap: () => { cmd(OP.TNEW, t); flash(T.nw, c); } });
-    T.hold = new Btn(p, x0 + 18 + q * 3.5, 368, 38, 'HOLD', { color: c, tap: () => cmd(OP.HOLD, t) });
-    el('div', 'abs', p, { left: px(x0 + 18), top: '470px', width: px(cw - 36), height: '2px', background: C.line });
+    T.dens = new Knob(p, x0 + 18 + q * 0.5, 372, 40, null, { def: 0.5, title: TSPUR[t] + ' DENSITY', change: v => cmd(OP.DENS, t, 0, v) });
+    T.k2 = new Knob(p, x0 + 18 + q * 1.5, 372, 40, null, { def: t === 0 ? 0.3 : 0.5, title: TSPUR[t] + ' ' + TK2[t], change: v => cmd(OP.TK2, t, 0, v) });
+    text(p, x0 + 18 + q * 0.5, 432, 'DENSITY', 18, C.txt, { center: true, sp: 1 });
+    text(p, x0 + 18 + q * 1.5, 432, TK2[t], 18, C.txt, { center: true, sp: 1 });
+    T.nw = new Btn(p, x0 + 18 + q * 2.5, 372, 38, 'NEW', { color: c, tap: () => { cmd(OP.TNEW, t); flash(T.nw, c); } });
+    T.hold = new Btn(p, x0 + 18 + q * 3.5, 372, 38, 'HOLD', { color: c, tap: () => cmd(OP.HOLD, t) });
+    el('div', 'abs', p, { left: px(x0 + 18), top: '474px', width: px(cw - 36), height: '2px', background: C.line });
     cap(p, x0 + 20, 490, 'SOUND');
     T.preset = new Drop(p, x0 + 18, 518, x1 - 18, 580, { color: c, open: () => pickPreset(t) });
     T.ma = new Knob(p, x0 + cw * 0.28, 690, 66, MACROS[t][0], { color: c, def: 0.5, title: TSPUR[t] + ' ' + MACROS[t][0], fmt: bip05, change: v => cmd(OP.MACRO, t * 2, 0, v) });
@@ -480,10 +606,16 @@ function updateBox() {
   const pr = meta.profiles[st.genre] || { variant: '' };
   box.genre.set(profLabel(st.genre), upper(pr.variant));
   if (document.activeElement !== box.bpm) box.bpm.textContent = Math.round(st.bpm);
-  box.keyLine.textContent = meta.notes[st.key] + ' ' + upper(st.scale) + ' · ' + [1, 2, 4, 8][st.length] + (st.length ? ' BARS' : ' BAR');
-  box.key.set(st.key); box.color.set(st.color); box.swing.set(st.swing); box.length.set(st.length);
+  box.proj.textContent = 'PROJECT: ' + st.project;
+  box.keyV.textContent = meta.notes[st.key];
+  box.scaleV.textContent = st.scaleSel < 0 ? 'AUTO' : shortScale(meta.scales[st.scaleSel]);
+  let ch = '';
+  for (const c of st.chords || []) { if ((ch + ' ' + c).length > 24) { ch += ' \u2026'; break; } ch += (ch ? '  ' : '') + c; }
+  box.keyLine.textContent = [1, 2, 4, 8][st.length] + (st.length ? ' BARS' : ' BAR') + '  \u00b7  ' + ch;
+  box.duck.set(st.duck); box.color.set(st.color); box.swing.set(st.swing); box.length.set(st.length);
   box.mutate.set(st.mutate); box.master.set(st.master);
   box.lock.lit(st.lock);
+  box.undo.style.color = st.undo ? C.txt : C.dim;
   let status, col;
   if (st.lock) { status = 'CHORDS LOCKED'; col = C.white; }
   else if (st.soundOn) { status = st.soundAll === 2 ? 'SOUND: SAME GENRE' : 'SOUND: ALL GENRES'; col = C.yellow; }
@@ -497,6 +629,8 @@ function updateBox() {
     else T.genre.set(upper(meta.profiles[tr.sel].name), 'OWN', TC[t]);
     T.dens.set(tr.dens); T.k2.set(tr.k2);
     T.hold.lit(tr.hold);
+    T.lock.setOn(tr.lock, TC[t]);
+    T.lock.textContent = tr.lock ? 'LOCKED' : 'LOCK';
     T.preset.set(tr.presetName, String(tr.preset + 1).padStart(2, '0') + '/' + tr.presetCount, tr.preset >= tr.factory ? TC[t] : null);
     T.ma.set(tr.macA); T.mb.set(tr.macB); T.level.set(tr.level);
     T.mute.lit(tr.mute, C.red);
@@ -807,33 +941,56 @@ const setup = {};
 function buildSetup() {
   const p = pages.SETUP = el('div', 'page', stage);
   header(p, 'SETUP');
-  section(p, 24, 112, 760, 560, 'MIX', C.txt);
-  setup.duck = new Knob(p, 200, 330, 52, 'DUCK', { color: C.txt, def: 0, change: v => cmd(OP.DUCK, 0, 0, v) });
-  text(p, 320, 280, 'THE KICK PUSHES', 20, C.dim, { weight: 600, sp: 2 });
-  text(p, 320, 312, 'BASS AND PADS DOWN', 20, C.dim, { weight: 600, sp: 2 });
-  section(p, 24, 576, 760, 1056, 'MIDI EXPORT', C.txt);
-  chip(p, 60, 660, 720, 740, 'THE LOOP THAT PLAYS', () => say(call('exportMidi', 0, 0) || ''));
-  chip(p, 60, 760, 720, 840, 'THE SONG (ABLAUF)', () => say(call('exportMidi', 1, 0) || ''));
-  chip(p, 60, 860, 720, 940, 'ALL PADS (ABLAUF)', () => say(call('exportMidi', 2, 0) || ''));
-  text(p, 60, 980, 'FILES GO TO  DOWNLOAD / GENRA BOX', 18, C.dim, { weight: 600, sp: 2 });
-  section(p, 776, 112, 2376, 1056, 'ABOUT', C.txt);
+  const G = C.green;
+  section(p, 24, 112, 1000, 700, 'ABLETON LINK', G);
+  if (meta.link) {
+    setup.link = new Btn(p, 150, 270, 56, 'LINK', { color: G, tap: () => cmd(OP.LINK_ON, st.link.on ? 0 : 1) });
+    const disp = el('div', 'disp', p, { left: '260px', top: '216px', width: '360px', height: '108px' });
+    setup.peers = text(disp, 22, 18, '', 34, G, { weight: 800, sp: 3 });
+    setup.peerSub = text(disp, 22, 66, '', 17, C.dim, { weight: 600, sp: 2 });
+    setup.ss = new Btn(p, 800, 270, 44, 'START / STOP', { color: G, tap: () => cmd(OP.LINK_SS, st.link.ss ? 0 : 1) });
+    setup.offset = new Knob(p, 150, 520, 52, 'OFFSET', {
+      min: -100, max: 300, def: 0, steps: 401, color: G, fmt: v => (v > 0 ? '+' : '') + Math.round(v) + ' MS',
+      change: v => cmd(OP.LINK_OFFSET, 0, 0, v),
+    });
+    text(p, 260, 470, 'OFFSET: SHIFTS THE BOX AGAINST THE OTHERS', 17, C.dim, { weight: 600, sp: 2 });
+    text(p, 260, 500, '(BLUETOOTH HEADPHONES: ABOUT +150 MS)', 17, C.dim, { weight: 600, sp: 2 });
+    setup.offTxt = text(p, 260, 540, '', 26, C.txt, { sp: 3 });
+    text(p, 60, 640, 'SAME WI-FI AS ABLETON LIVE OR THE OTHER APPS \u00b7 THEY FIND EACH OTHER BY THEMSELVES', 16, C.dim, { weight: 600, sp: 2 });
+  } else
+    text(p, 60, 200, 'NOT IN THIS BUILD', 22, C.dim, { weight: 600, sp: 3 });
+  section(p, 24, 716, 1000, 1056, 'MIDI EXPORT', C.txt);
+  chip(p, 60, 800, 350, 880, 'THE LOOP', () => say(call('exportMidi', 0, 0) || ''));
+  chip(p, 370, 800, 660, 880, 'THE SONG', () => say(call('exportMidi', 1, 0) || ''));
+  chip(p, 680, 800, 970, 880, 'ALL PADS', () => say(call('exportMidi', 2, 0) || ''));
+  text(p, 60, 920, 'FILES GO TO  DOWNLOAD / GENRA BOX', 17, C.dim, { weight: 600, sp: 2 });
+  section(p, 1016, 112, 2376, 1056, 'ABOUT', C.txt);
   const lines = [
-    'GENRA BOX · THE GROOVEBOX OF THE GENRA VCV RACK PLUGIN ON ANDROID',
-    'GENERATOR: GENRA  ·  VOICES: DRUM-X (JIANT FM), GENRA MONO, FUNKE, SCHMELZ  ·  SONGS: ABLAUF MINI',
+    'GENRA BOX \u00b7 THE GROOVEBOX OF THE GENRA VCV RACK PLUGIN ON ANDROID',
+    'GENERATOR: GENRA  \u00b7  VOICES: DRUM-X (JIANT FM), GENRA MONO, FUNKE, SCHMELZ  \u00b7  SONGS: ABLAUF MINI',
     '',
-    'KNOBS: DRAG UP OR RIGHT  ·  DOUBLE TAP: BACK TO THE DEFAULT',
-    'BPM: DRAG THE NUMBER  ·  DOUBLE TAP: THE GENRE’S TEMPO',
+    'KNOBS: DRAG UP OR RIGHT  \u00b7  DOUBLE TAP: BACK TO THE DEFAULT',
+    'BPM: DRAG THE NUMBER  \u00b7  DOUBLE TAP: THE GENRE\u2019S TEMPO',
     'TAP A TRACK NAME ON THE BOX PAGE: ITS SYNTH PAGE',
-    'EVERYTHING IS KEPT WHEN THE APP CLOSES (SESSION AND YOUR PRESETS)',
+    'PROJECTS: TAP THE NAME UNDER \u201cGENRA BOX\u201d  \u00b7  EVERYTHING IS SAVED BY ITSELF',
     '',
-    'FREE SOFTWARE · GPL-3.0 · GITHUB.COM/CAMILLOWUP/GENRAANDROID',
+    'FREE SOFTWARE \u00b7 GPL-3.0 \u00b7 ABLETON LINK: GPL-2.0+ \u00b7 GITHUB.COM/CAMILLOWUP/GENRAANDROID',
   ];
-  lines.forEach((s, i) => text(p, 810, 190 + i * 46, s, 22, i < 2 ? C.txt : C.dim, { weight: 600, sp: 2 }));
-  setup.audio = text(p, 810, 190 + lines.length * 46 + 40, '', 22, C.green, { weight: 600, sp: 2 });
-  setup.ver = text(p, 810, 190 + lines.length * 46 + 86, '', 20, C.dim, { weight: 600, sp: 2 });
+  lines.forEach((s2, i) => text(p, 1050, 190 + i * 46, s2, 20, i < 2 ? C.txt : C.dim, { weight: 600, sp: 2 }));
+  setup.audio = text(p, 1050, 190 + lines.length * 46 + 40, '', 22, C.green, { weight: 600, sp: 2 });
+  setup.ver = text(p, 1050, 190 + lines.length * 46 + 86, '', 20, C.dim, { weight: 600, sp: 2 });
 }
 function updateSetup() {
-  setup.duck.set(st.duck);
+  if (setup.link) {
+    const L = st.link;
+    setup.link.lit(L.on, C.green);
+    setup.ss.lit(L.ss, C.green);
+    setup.peers.textContent = L.on ? L.peers + (L.peers === 1 ? ' PEER' : ' PEERS') : 'OFF';
+    setup.peers.style.color = L.on ? C.green : C.dim;
+    setup.peerSub.textContent = L.on ? 'TEMPO ' + st.bpm.toFixed(1) + (L.peers ? ' \u00b7 IN SYNC' : ' \u00b7 LOOKING') : 'TAP LINK TO JOIN';
+    setup.offset.set(L.offset);
+    setup.offTxt.textContent = (L.offset > 0 ? '+' : '') + Math.round(L.offset) + ' MS';
+  }
   setup.audio.textContent = 'AUDIO: ' + upper(call('audioInfo') || '').replace(/^AUDIO: /, '');
   setup.ver.textContent = 'VERSION ' + (call('version') || '');
 }
@@ -846,6 +1003,8 @@ function applyState() {
   updateDrumX();
   for (let t = 1; t < 4; t++) updateSynth(t);
   updateSetup();
+  updatePerform();
+  updateGrid();
   if (st.msgId !== lastMsg) { if (lastMsg >= 0 && st.msg) say(st.msg); lastMsg = st.msgId; }
 }
 function poll() {
@@ -861,6 +1020,8 @@ function poll() {
     updateBoxFast();
     updateAblaufFast();
     updateDrumXFast();
+    updatePerformFast();
+    updateGridFast();
   }
   // the session is written now and then (and when the app goes to the background)
   const now = performance.now();
@@ -874,6 +1035,8 @@ function start() {
   fst = JSON.parse(call('fast'));
   buildBox();
   buildAblauf();
+  buildPerform();
+  buildGrid();
   buildDrumX();
   buildSynth(1, 'MONO', 'GENRA MONO · BASS', [
     ['OSCILLATORS', [24, 212, 760, 628], 3, ['wave1', 'tune1', 'level1', 'wave2', 'tune2', 'level2']],

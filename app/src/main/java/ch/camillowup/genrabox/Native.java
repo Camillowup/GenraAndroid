@@ -21,4 +21,10 @@ final class Native {
     static native byte[] exportMidi(int what, int idx);
     static native String exportName();
     static native String audioInfo();
+    static native String gridState(int track, int from, int n);
+    static native void gridWrite(int track, String json);
+    static native String projects();
+    /** what: 0 open, 1 new, 2 save as, 3 rename, 4 duplicate, 5 delete */
+    static native void project(int what, String arg);
+    static native boolean linkOn();
 }

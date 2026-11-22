@@ -94,6 +94,8 @@ bool openStream() {
 	// two bursts of buffer: low latency, but room for a busy moment
 	AAudioStream_setBufferSizeInFrames(stream, burst * 2);
 	engine()->setSampleRate((float) sr);
+	// what is rendered now is heard about one buffer (plus the converter) later: for Ableton Link
+	engine()->setOutputLatency((AAudioStream_getBufferSizeInFrames(stream) + burst) / (double) (sr > 0 ? sr : 48000));
 	r = AAudioStream_requestStart(stream);
 	if (r != AAUDIO_OK) {
 		LOGE("requestStart failed: %s", AAudio_convertResultToText(r));
@@ -189,6 +191,36 @@ JNIEXPORT jbyteArray JNICALL Java_ch_camillowup_genrabox_Native_exportMidi(JNIEn
 
 JNIEXPORT jstring JNICALL Java_ch_camillowup_genrabox_Native_exportName(JNIEnv* env, jclass) {
 	return jstr(env, lastExportName);
+}
+
+JNIEXPORT jstring JNICALL Java_ch_camillowup_genrabox_Native_gridState(JNIEnv* env, jclass, jint track, jint from, jint n) {
+	return jstr(env, engine()->gridState(track, from, n));
+}
+
+JNIEXPORT void JNICALL Java_ch_camillowup_genrabox_Native_gridWrite(JNIEnv* env, jclass, jint track, jstring json) {
+	engine()->gridWrite(track, str(env, json));
+}
+
+JNIEXPORT jstring JNICALL Java_ch_camillowup_genrabox_Native_projects(JNIEnv* env, jclass) {
+	return jstr(env, engine()->projects());
+}
+
+/** what: 0 open, 1 new, 2 save as, 3 rename, 4 duplicate, 5 delete */
+JNIEXPORT void JNICALL Java_ch_camillowup_genrabox_Native_project(JNIEnv* env, jclass, jint what, jstring arg) {
+	std::string a = str(env, arg);
+	switch (what) {
+		case 0: engine()->projectOpen(a); break;
+		case 1: engine()->projectNew(); break;
+		case 2: engine()->projectSaveAs(a); break;
+		case 3: engine()->projectRename(a); break;
+		case 4: engine()->projectDuplicate(a); break;
+		case 5: engine()->projectDelete(a); break;
+		default: break;
+	}
+}
+
+JNIEXPORT jboolean JNICALL Java_ch_camillowup_genrabox_Native_linkOn(JNIEnv*, jclass) {
+	return engine()->linkOn() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jstring JNICALL Java_ch_camillowup_genrabox_Native_audioInfo(JNIEnv* env, jclass) {

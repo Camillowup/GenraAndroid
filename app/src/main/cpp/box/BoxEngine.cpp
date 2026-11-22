@@ -10,6 +10,9 @@
 #include <cstring>
 #include <ctime>
 
+#include <dirent.h>
+#include <sys/stat.h>
+
 #include "../genra-src/GenreMatch.hpp"
 #include "../genra-src/ui/SoundGroups.hpp"
 
@@ -296,20 +299,19 @@ void Engine::init(const std::string& filesDir) {
 			}, prof(p).name);
 	}
 	loadUserPresets();
+	loadSettings();
 	setSampleRate(sr);
 	if (!loadSession()) {
-		// a fresh box: UK Garage, a pattern and the presets of its genre
-		mainProfile = 0;
-		for (int g = 0; g < NUM_GENRES; g++)
-			if (numVariants(g) > 0 && std::string(prof(profileOf(g, 0)).name) == "UK Garage")
-				mainProfile = profileOf(g, 0);
-		bpm = prof(mainProfile).bpm;
-		for (int t = 0; t < NUM_TRACKS; t++)
-			loadPreset(t, 0);
-		doGenerate(true);
-		for (int t = 0; t < NUM_TRACKS; t++)
-			rollPreset(t);
+		resetFresh();
+		projId = newId();
+		projName = "PROJECT 1";
+		mkdir((dir + "/projects").c_str(), 0755);
 	}
+#ifdef GENRA_LINK
+	link.reset(new ableton::Link(bpm));
+	link->enableStartStopSync(linkStartStop);
+	link->enable(linkEnabled);
+#endif
 	ready = true;
 	changed();
 }
@@ -323,6 +325,8 @@ void Engine::setSampleRate(float s) {
 	for (int c = 0; c < NP; c++)
 		sv[c].setSampleRate(sr), so[c].setSampleRate(sr);
 	dxPos = 0.0;
+	pfx.setSampleRate(sr);
+	pfx.prepareEq();
 }
 
 // ================================================================ GENRA
@@ -332,8 +336,8 @@ Params Engine::buildParams(bool withArr) {
 	Params P;
 	P.genre = mainProfile;
 	P.key = clampv(key, 0, 11);
-	P.scale = prof(pat.chordGenre).scale;
-	P.scaleOverride = false;
+	P.scale = scaleSel >= 0 ? clampv(scaleSel, 0, NUM_SCALES - 1) : prof(pat.chordGenre).scale;
+	P.scaleOverride = scaleSel >= 0;
 	P.complexK = 0.5f;
 	P.colorK = color;
 	P.swingK = swing;
@@ -360,12 +364,13 @@ void Engine::doGenerate(bool all) {
 	Params P = buildParams();
 	if (all)
 		for (int t = 0; t < NUM_TRACKS; t++)
-			trackSel[t] = -1;  // NEW ALL: the genre fields back to the main genre (as GENRA)
+			if (!trackLock[t])
+				trackSel[t] = -1;  // NEW ALL: the genre fields back to the main genre (as GENRA)
 	if (!chordLock)
 		generateChords(pat, mainProfile, rng, P);
 	for (int t = 0; t < NUM_TRACKS; t++) {
-		if (!all && trackSel[t] >= 0)
-			continue;
+		if (trackLock[t] || (!all && trackSel[t] >= 0))
+			continue;  // a locked track keeps its notes
 		generateTrack(pat, t, trackTarget(t), rng, P);
 	}
 	layoutTimeline(pat, lengthSteps());
@@ -676,6 +681,7 @@ void Engine::cmd(int op, int a, int b, float f) {
 			bassV.gate = melV.gate = padV.gate = 0.f;
 			break;
 		case OP_NEWALL:
+			pushUndo();
 			doGenerate(true);
 			for (int k = 0; k < NUM_TRACKS; k++)
 				rollPreset(k);
@@ -698,6 +704,7 @@ void Engine::cmd(int op, int a, int b, float f) {
 		case OP_MASTER: master = c01(f); break;
 		case OP_DUCK: duck = c01(f); break;
 		case OP_GENRE:
+			pushUndo();
 			mainProfile = clampv(a, 0, numProfiles() - 1);
 			doGenerate(false);
 			for (int k = 0; k < NUM_TRACKS; k++)
@@ -705,6 +712,7 @@ void Engine::cmd(int op, int a, int b, float f) {
 					rollPreset(k);
 			break;
 		case OP_TGENRE:
+			pushUndo();
 			trackSel[t] = b < 0 ? -1 : clampv(b, 0, numProfiles() - 1);
 			newTrack(t);
 			rollPreset(t);
@@ -721,6 +729,7 @@ void Engine::cmd(int op, int a, int b, float f) {
 				voicingK = c01(f);
 			break;
 		case OP_TNEW:
+			pushUndo();
 			newTrack(t);
 			rollPreset(t);
 			break;
@@ -889,14 +898,357 @@ void Engine::cmd(int op, int a, int b, float f) {
 			}
 			break;
 		}
+		// ---- 1.1
+		case OP_UNDO:
+		case OP_REDO: {
+			auto& from = op == OP_UNDO ? undoStack : redoStack;
+			auto& to = op == OP_UNDO ? redoStack : undoStack;
+			if (from.empty()) {
+				say(op == OP_UNDO ? "Nothing to undo" : "Nothing to redo");
+				break;
+			}
+			to.push_back(takeSnap());
+			restoreSnap(*from.back());
+			from.pop_back();
+			say(op == OP_UNDO ? "Undone" : "Redone");
+			break;
+		}
+		case OP_SCALE: scaleSel = a < 0 ? -1 : clampv(a, 0, NUM_SCALES - 1); break;
+		case OP_TLOCK: trackLock[t] = !trackLock[t]; break;
+		case OP_G_MARK: pushUndo(); break;
+		case OP_G_DRUM:
+		case OP_G_DRUMRAT:
+		case OP_G_DRUMCH: {
+			int v = clampv(a, 0, NUM_DRUMS - 1), st = clampv(b, 0, MAX_STEPS - 1), L = lengthSteps();
+			if (!pat.fixed[T_DRUMS])
+				freezeTrack(pat, buildParams(false), T_DRUMS, L);
+			DrumStep& d = pat.drums[v][st];
+			if (op == OP_G_DRUM)
+				setDrum(pat, v, st, (int) std::lround(f), d.frat);
+			else if (op == OP_G_DRUMRAT && d.fv > 0)
+				setDrum(pat, v, st, d.fv, clampv((int) std::lround(f), 1, 4));
+			else if (op == OP_G_DRUMCH && d.fv > 0) {
+				int c = clampv((int) std::lround(f), 1, 100);
+				setDrumChance(pat, v, st, c >= 100 ? 0 : c, NC_ALWAYS);
+			}
+			pat.fixed[T_DRUMS] = 1;
+			patChanges++;
+			break;
+		}
+		case OP_G_COPY: {
+			int L = lengthSteps();
+			if (!pat.fixed[t])
+				freezeTrack(pat, buildParams(false), t, L);
+			copyBar(pat, t, clampv(b, 0, MAX_BARS - 1), clip);
+			say("Bar " + std::to_string(b + 1) + " copied");
+			break;
+		}
+		case OP_G_PASTE:
+			if (clip.track != t) {
+				say(clip.track < 0 ? "Copy a bar first" : "The copied bar is of another track");
+				break;
+			}
+			pushUndo();
+			if (!pat.fixed[t])
+				freezeTrack(pat, buildParams(false), t, lengthSteps());
+			pasteBar(pat, t, clampv(b, 0, MAX_BARS - 1), clip);
+			patChanges++;
+			say("Pasted into bar " + std::to_string(b + 1));
+			break;
+		case OP_G_CLEAR:
+			pushUndo();
+			clearTrack(pat, t);
+			pat.fixed[t] = 1;
+			patChanges++;
+			say("Track cleared");
+			break;
+		case OP_G_LEN: {
+			pushUndo();
+			int len = clampv(b, 0, (int) MAX_STEPS);
+			if (t == T_DRUMS)
+				for (int v = 0; v < NUM_DRUMS; v++)
+					setCycleLen(pat, T_DRUMS, v, len);
+			else
+				setCycleLen(pat, t, -1, len);
+			patChanges++;
+			break;
+		}
+		case OP_PF_PAD: pfx.press(a, b != 0); break;
+		case OP_PF_LATCH: pfx.latch(a); break;
+		case OP_PF_X:
+			pfx.x = c01(f);
+			pfx.xyTouch = true;
+			break;
+		case OP_PF_Y:
+			pfx.y = c01(f);
+			pfx.xyTouch = true;
+			break;
+		case OP_PF_XYUP: pfx.xyTouch = false; break;
+		case OP_PF_TARGET: pfTarget = (unsigned) a & 0xF; break;
+		case OP_PF_EQ: pfx.eq[clampv(a, 0, 2)] = c01(f); break;
+		case OP_PF_KILL: pfx.kill[clampv(a, 0, 2)] = !pfx.kill[clampv(a, 0, 2)]; break;
+		case OP_PF_FILL: fillHold = b != 0; break;
+		case OP_PF_BREAK:
+			breakHold = b != 0;
+			if (breakHold)
+				bassV.gate = melV.gate = 0.f;
+			break;
+		case OP_PF_ASSIGN:
+			if (a >= 0 && a < 16)
+				pfx.assign[a] = clampv(b, 0, NUM_FX - 1);
+			saveSettings();
+			break;
+		case OP_PF_RESET:
+			for (int i = 0; i < 16; i++)
+				pfx.assign[i] = i, pfx.latched[i] = false;
+			saveSettings();
+			break;
+		case OP_LINK_ON:
+			linkEnabled = a != 0;
+#ifdef GENRA_LINK
+			if (link)
+				link->enable(linkEnabled);
+#endif
+			saveSettings();
+			break;
+		case OP_LINK_SS:
+			linkStartStop = a != 0;
+#ifdef GENRA_LINK
+			if (link)
+				link->enableStartStopSync(linkStartStop);
+#endif
+			saveSettings();
+			break;
+		case OP_LINK_OFFSET:
+			linkOffsetMs = clampv(f, -100.f, 300.f);
+			saveSettings();
+			break;
 		default: break;
 	}
+#ifdef GENRA_LINK
+	if (op == OP_BPM || op == OP_BPM_GENRE)
+		linkTempoDirty = true;
+	if (linkEnabled && op == OP_PLAY)
+		linkStartReq = true;
+	if (linkEnabled && op == OP_STOP)
+		linkStopReq = true;
+#endif
 	changed();
 }
 
 std::string Engine::message() {
 	std::lock_guard<std::recursive_mutex> lk(mtx);
 	return msg;
+}
+
+// ================================================================ UNDO / REDO of the pattern
+std::shared_ptr<Engine::PatSnap> Engine::takeSnap() {
+	auto sn = std::make_shared<PatSnap>();
+	sn->pat = pat;
+	for (int t = 0; t < NUM_TRACKS; t++) {
+		sn->trackSel[t] = trackSel[t];
+		sn->preset[t] = preset[t];
+		sn->vals[t] = vals[t];
+	}
+	return sn;
+}
+void Engine::restoreSnap(const PatSnap& sn) {
+	pat = sn.pat;
+	for (int t = 0; t < NUM_TRACKS; t++) {
+		trackSel[t] = sn.trackSel[t];
+		if (preset[t] != sn.preset[t] && sn.preset[t] < presetCount(t))
+			loadPreset(t, sn.preset[t]);  // the sound that went with it (NEW with SOUND rolled the presets)
+		if (t != T_DRUMS && sn.vals[t].size() == vals[t].size()) {
+			vals[t] = sn.vals[t];
+			dirty[t] = true;
+		}
+	}
+	layoutTimeline(pat, lengthSteps());
+	padHasPrev = false;
+	patChanges++;
+	changed();
+}
+void Engine::pushUndo() {
+	undoStack.push_back(takeSnap());
+	if (undoStack.size() > 40)
+		undoStack.erase(undoStack.begin());
+	redoStack.clear();
+}
+
+// ================================================================ GRID
+std::string Engine::gridState(int track, int from, int nSteps) {
+	std::lock_guard<std::recursive_mutex> lk(mtx);
+	int t = clampv(track, 0, NUM_TRACKS - 1);
+	int L = lengthSteps();
+	from = clampv(from, 0, MAX_STEPS - 1);
+	int to = std::min(from + clampv(nSteps, 1, 64), (int) MAX_STEPS);
+	Params P = buildParams(false);
+	P.ignoreChance = true;
+	std::string o = "{\"track\":";
+	jint(o, t);
+	o += ",\"L\":";
+	jint(o, L);
+	o += ",\"fixed\":";
+	o += pat.fixed[t] ? "true" : "false";
+	o += ",\"cycle\":";
+	jint(o, t == T_DRUMS ? pat.vLen[0] : pat.tLen[t]);
+	o += ",\"key\":";
+	jint(o, key);
+	o += ",\"scale\":";
+	jint(o, P.scale);
+	o += ",\"scaleMask\":";
+	{
+		int mask = 0;
+		const Scale& sc = SCALES[clampv(P.scale, 0, NUM_SCALES - 1)];
+		for (int k = 0; k < 7; k++)
+			if (sc.pentaMask & (1 << k))
+				mask |= 1 << ((sc.iv[k] + key) % 12);
+		jint(o, mask);
+	}
+	// the chords of the window (name, start, length, its tones as pitch classes)
+	o += ",\"chords\":[";
+	bool first = true;
+	for (int st = from; st < to && st < L; st++) {
+		if (st != from && !isEventStart(pat, st))
+			continue;
+		int end = st + 1;
+		while (end < to && end < L && !isEventStart(pat, end))
+			end++;
+		Chord ch = chordAt(pat, P, st);
+		if (!first)
+			o += ',';
+		first = false;
+		o += "{\"s\":";
+		jint(o, st);
+		o += ",\"n\":";
+		jint(o, end - st);
+		o += ",\"name\":";
+		jstr(o, chordName(ch, key, P.scale));
+		o += ",\"pcs\":";
+		int pcs = 0;
+		for (int k = 0; k < ch.n; k++)
+			pcs |= 1 << (((ch.root + ch.iv[k] + key) % 12 + 12) % 12);
+		jint(o, pcs);
+		o += '}';
+	}
+	o += ']';
+	if (t == T_DRUMS) {
+		o += ",\"hits\":[";
+		for (int v = 0; v < NUM_DRUMS; v++) {
+			if (v)
+				o += ',';
+			o += '[';
+			for (int st = from; st < to; st++) {
+				if (st > from)
+					o += ',';
+				Hit h = st < L ? drumHit(pat, P, v, st, L, false) : Hit();
+				int vel = h.on ? clampv((int) std::lround(h.vel * 127.f), 1, 127) : 0;
+				int ch = pat.fixed[T_DRUMS] ? pat.drums[v][st].fchance : 0;
+				o += '[';
+				jint(o, vel);
+				o += ',';
+				jint(o, h.on ? h.ratchet : 1);
+				o += ',';
+				jint(o, ch == 0 ? 100 : ch);
+				o += ']';
+			}
+			o += ']';
+		}
+		o += ']';
+	}
+	else {
+		std::vector<GridNote> notes = trackNotes(pat, P, t, L);
+		o += ",\"notes\":[";
+		bool f2 = true;
+		for (const GridNote& g : notes) {
+			if (!f2)
+				o += ',';
+			f2 = false;
+			o += '[';
+			jint(o, g.start);
+			o += ',';
+			jint(o, g.len);
+			o += ',';
+			jint(o, g.pitch);
+			o += ',';
+			jint(o, g.vel);
+			o += ',';
+			jint(o, g.slide ? 1 : 0);
+			o += ',';
+			jint(o, g.chance);
+			o += ']';
+		}
+		o += ']';
+	}
+	o += '}';
+	return o;
+}
+
+/** [[start, len, pitch, vel, slide, chance], ...] */
+static std::vector<GridNote> parseNotes(const std::string& js) {
+	std::vector<GridNote> out;
+	std::vector<long> nums;
+	size_t i = 0;
+	int depth = 0;
+	while (i < js.size()) {
+		char c = js[i];
+		if (c == '[') {
+			depth++;
+			if (depth == 2)
+				nums.clear();
+			i++;
+		}
+		else if (c == ']') {
+			if (depth == 2 && nums.size() >= 4) {
+				GridNote g;
+				g.start = (int) nums[0];
+				g.len = (int) std::max(1L, nums[1]);
+				g.pitch = (int) nums[2];
+				g.vel = (int) std::max(1L, std::min(127L, nums[3]));
+				g.slide = nums.size() > 4 && nums[4] != 0;
+				g.chance = nums.size() > 5 ? (int) std::max(1L, std::min(100L, nums[5])) : 100;
+				out.push_back(g);
+			}
+			depth--;
+			i++;
+		}
+		else if (c == '-' || (c >= '0' && c <= '9')) {
+			char* end = nullptr;
+			long v = std::strtol(js.c_str() + i, &end, 10);
+			nums.push_back(v);
+			i = end - js.c_str();
+			if (i < js.size() && js[i] == '.')  // a fraction: skip it
+				while (i < js.size() && (js[i] == '.' || (js[i] >= '0' && js[i] <= '9')))
+					i++;
+		}
+		else
+			i++;
+		if (out.size() > 2048)
+			break;
+	}
+	return out;
+}
+
+void Engine::gridWrite(int track, const std::string& json) {
+	std::lock_guard<std::recursive_mutex> lk(mtx);
+	int t = clampv(track, 1, NUM_TRACKS - 1);
+	int L = lengthSteps();
+	Params P = buildParams(false);
+	pushUndo();
+	if (!pat.fixed[t])
+		freezeTrack(pat, P, t, L);
+	std::vector<GridNote> notes = parseNotes(json);
+	for (GridNote& g : notes) {
+		g.start = clampv(g.start, 0, L - 1);
+		g.len = clampv(g.len, 1, L - g.start);
+		g.pitch = clampv(g.pitch, 12, 115);
+	}
+	writeTrackNotes(pat, P, t, notes, L);
+	pat.fixed[t] = 1;
+	if (t == T_PADS)
+		padHasPrev = false;
+	patChanges++;
+	changed();
 }
 
 // ================================================================ the sequencer (GENRA's tick)
@@ -1058,8 +1410,7 @@ void Engine::doTick() {
 		fillActive = rng.uni() < P.fill || arrFillEnd > 0;
 		P.fillActive = fillActive;
 		if (!firstPass && mutateAmt > 0.001f) {
-			bool lk[NUM_TRACKS] = {false, false, false, false};
-			mutate(pat, mutateAmt, rng, lk, chordLock, P);
+			mutate(pat, mutateAmt, rng, trackLock, chordLock, P);
 			patChanges++;
 			changed();
 		}
@@ -1067,7 +1418,12 @@ void Engine::doTick() {
 	}
 	P.pass = passCount;
 	const PartPos pp = curPartPos(L);
-	drumStep(pat, P, step, arrFillEnd > 0 ? arrFillEnd : L, fillActive, qDrums);
+	if (fillHold) {  // PERFORM: FILL held, the drums play their fill to the end of this bar
+		P.fillActive = true;
+		drumStep(pat, P, step, std::min(L, (step / STEPS_PER_BAR + 1) * STEPS_PER_BAR), true, qDrums);
+	}
+	else
+		drumStep(pat, P, step, arrFillEnd > 0 ? arrFillEnd : L, fillActive, qDrums);
 	if (pp.sec >= 0 && (pat.partMask & (1u << T_DRUMS)))
 		shapeDrums(pp, qDrums);
 	{
@@ -1089,11 +1445,15 @@ void Engine::doTick() {
 			start();
 	};
 	NoteEv nb = bassAt(pat, P, step, L);
+	if (breakHold)  // PERFORM: BREAK held, only drums and pads
+		nb.on = false;
 	if (pp.sec >= 0 && (pat.partMask & (1u << T_BASS)))
 		shapeNote(pp, T_BASS, nb);
 	qBass = nb;
 	place(T_BASS, nb.on, dBass, [&] { startMono(bassV, nb); });
 	NoteEv nm = melAt(pat, P, step, L);
+	if (breakHold)
+		nm.on = false;
 	if (pp.sec >= 0 && (pat.partMask & (1u << T_MELODY)))
 		shapeNote(pp, T_MELODY, nm);
 	qMel = nm;
@@ -1202,12 +1562,20 @@ void Engine::renderVoices(float& outL, float& outR) {
 		duckEnv *= std::exp(-1.f / (0.15f * sr));
 	float dg = 1.f - 0.85f * duck * duckEnv;
 	tl[T_BASS] *= dg, tr[T_BASS] *= dg, tl[T_PADS] *= dg, tr[T_PADS] *= dg;
-	float ml = 0.f, mr = 0.f;
+	float ml = 0.f, mr = 0.f, bl = 0.f, br = 0.f;
 	for (int t = 0; t < NUM_TRACKS; t++) {
 		float target = mute[t] ? 0.f : 1.f;
 		muteGain[t] += (target - muteGain[t]) * 0.002f;
 		float gn = gainOf(level[t]) * muteGain[t];
-		ml += tl[t] * gn, mr += tr[t] * gn;
+		if (pfTarget & (1u << t))
+			bl += tl[t] * gn, br += tr[t] * gn;  // the PERFORM bus
+		else
+			ml += tl[t] * gn, mr += tr[t] * gn;
+	}
+	{
+		float sl = 0.f, sr2 = 0.f;
+		pfx.process(bl, br, bpm, sl, sr2);
+		ml += bl + sl, mr += br + sr2;
 	}
 	float mg = gainOf(master);
 	auto soft = [](float x) {
@@ -1228,15 +1596,95 @@ void Engine::render(float* L, float* R, int n) {
 	}
 	for (int t = 0; t < NUM_TRACKS; t++)
 		applyVals(t);
+	bool useLink = false;
+	double beat0 = 0.0, bps = 0.0;
+#ifdef GENRA_LINK
+	// Ableton Link: tempo, the beat grid and start / stop come from the session; the box ticks on its 16ths
+	useLink = link && linkEnabled;
+	if (useLink) {
+		auto st = link->captureAudioSessionState();
+		const auto host = link->clock().micros() +
+		                  std::chrono::microseconds((long long) ((outLatency + linkOffsetMs / 1000.0) * 1e6));
+		if (linkTempoDirty) {
+			st.setTempo(bpm, host);
+			linkTempoDirty = false;
+		}
+		if (linkStartReq) {
+			linkStartReq = false;
+			if (linkStartStop)
+				st.setIsPlayingAndRequestBeatAtTime(true, host, 0.0, 4.0);
+			linkArmed = true;
+			lastPh = -1.0;
+		}
+		if (linkStopReq) {
+			linkStopReq = false;
+			if (linkStartStop)
+				st.setIsPlaying(false, host);
+		}
+		if (linkStartStop) {
+			bool lp = st.isPlaying();
+			if (lp != linkWasPlaying) {
+				linkWasPlaying = lp;
+				if (lp && !running) {  // another app pressed play
+					restart();
+					running = true;
+					linkArmed = true;
+					lastPh = -1.0;
+					changed();
+				}
+				else if (!lp && running) {
+					running = false;
+					step = -1;
+					resetArmed = true;
+					bassV.gate = melV.gate = padV.gate = 0.f;
+					changed();
+				}
+			}
+		}
+		float tempo = clampv((float) st.tempo(), 40.f, 220.f);
+		if (std::fabs(tempo - bpm) > 0.01f) {
+			bpm = tempo;
+			changed();
+		}
+		beat0 = st.beatAtTime(host, 4.0);
+		link->commitAudioSessionState(st);
+		bps = bpm / 60.0 / sr;
+		int peers = (int) link->numPeers();
+		if (peers != linkPeers) {
+			linkPeers = peers;
+			changed();
+		}
+	}
+#endif
 	for (int i = 0; i < n; i++) {
 		stepPeriod = sr * 60.f / clampv(bpm, 40.f, 220.f) / 4.f;
 		if (running) {
 			bool tick = false;
-			phase += 1.f / stepPeriod;
-			if (phase >= 1.f || resetArmed) {
-				phase = resetArmed ? 0.f : phase - 1.f;
+			if (useLink) {
+				double beat = beat0 + i * bps;
+				if (linkArmed) {  // wait for the next bar line of the session
+					double ph = std::fmod(beat, 4.0);
+					if (ph < 0)
+						ph += 4.0;
+					if (lastPh >= 0.0 && ph < lastPh) {
+						linkArmed = false;
+						step = -1;
+						tick = true;
+					}
+					lastPh = ph;
+				}
+				else if (std::floor(beat * 4.0) != std::floor(lastLinkBeat * 4.0))
+					tick = true;
+				lastLinkBeat = beat;
 				resetArmed = false;
-				tick = true;
+			}
+			else {
+				phase += 1.f / stepPeriod;
+				if (phase >= 1.f || resetArmed) {
+					phase = resetArmed ? 0.f : phase - 1.f;
+					resetArmed = false;
+					tick = true;
+				}
 			}
 			processQueued();
 			if (tick)
@@ -1262,6 +1710,11 @@ void Engine::render(float* L, float* R, int n) {
 	}
 	for (int v = 0; v < NUM_DRUMS; v++)
 		lastHit[v] *= std::exp(-n / (0.12f * sr));
+}
+
+void Engine::setOutputLatency(double seconds) {
+	std::lock_guard<std::recursive_mutex> lk(mtx);
+	outLatency = clampv(seconds, 0.0, 0.5);
 }
 
 // ================================================================ ABLAUF MINI
@@ -1770,7 +2223,33 @@ std::string Engine::meta() {
 			o += ',';
 		jstr(o, NOTE_NAMES[i]);
 	}
-	o += "],\"sr\":";
+	o += "],\"scales\":[";
+	for (int i = 0; i < NUM_SCALES; i++) {
+		if (i)
+			o += ',';
+		jstr(o, SCALES[i].name);
+	}
+	o += "],\"fx\":[";
+	for (int i = 0; i < NUM_FX; i++) {
+		if (i)
+			o += ',';
+		o += "{\"name\":";
+		jstr(o, FX_NAMES[i]);
+		o += ",\"group\":";
+		jstr(o, FX_GROUP[i]);
+		o += ",\"x\":";
+		jstr(o, FX_XY[i][0]);
+		o += ",\"y\":";
+		jstr(o, FX_XY[i][1]);
+		o += '}';
+	}
+	o += "],\"link\":";
+#ifdef GENRA_LINK
+	o += "true";
+#else
+	o += "false";
+#endif
+	o += ",\"sr\":";
 	jnum(o, sr);
 	o += ",\"drumx\":";
 	o += dx ? "true" : "false";
@@ -1794,6 +2273,63 @@ std::string Engine::state(int known) {
 	int sc = clampv(P.scale, 0, NUM_SCALES - 1);
 	o += ",\"scale\":";
 	jstr(o, SCALES[sc].name);
+	o += ",\"scaleSel\":";
+	jint(o, scaleSel);
+	o += ",\"genreScale\":";
+	jstr(o, SCALES[clampv(prof(pat.chordGenre).scale, 0, NUM_SCALES - 1)].name);
+	// the chords of the loop (for the display)
+	o += ",\"chords\":[";
+	{
+		int L = lengthSteps(), nC = 0;
+		std::string last;
+		for (int st = 0; st < L && nC < 8; st++) {
+			if (st && !isEventStart(pat, st))
+				continue;
+			std::string nm = chordName(chordAt(pat, P, st), key, P.scale);
+			if (nm == last)
+				continue;
+			if (nC)
+				o += ',';
+			jstr(o, nm);
+			last = nm;
+			nC++;
+		}
+	}
+	o += "],\"undo\":";
+	jint(o, (long long) undoStack.size());
+	o += ",\"redo\":";
+	jint(o, (long long) redoStack.size());
+	o += ",\"project\":";
+	jstr(o, projName);
+	o += ",\"pf\":{\"assign\":[";
+	for (int i = 0; i < 16; i++) {
+		if (i)
+			o += ',';
+		jint(o, pfx.assign[i]);
+	}
+	o += "],\"target\":";
+	jint(o, pfTarget);
+	o += ",\"eq\":[";
+	for (int i = 0; i < 3; i++) {
+		if (i)
+			o += ',';
+		jnum(o, pfx.eq[i]);
+	}
+	o += "],\"kill\":[";
+	for (int i = 0; i < 3; i++) {
+		if (i)
+			o += ',';
+		o += pfx.kill[i] ? "true" : "false";
+	}
+	o += "]},\"link\":{\"on\":";
+	o += linkEnabled ? "true" : "false";
+	o += ",\"ss\":";
+	o += linkStartStop ? "true" : "false";
+	o += ",\"offset\":";
+	jnum(o, linkOffsetMs);
+	o += ",\"peers\":";
+	jint(o, linkPeers);
+	o += '}';
 	o += ",\"color\":";
 	jnum(o, color);
 	o += ",\"swing\":";
@@ -1845,6 +2381,10 @@ std::string Engine::state(int known) {
 		o += mute[t] ? "true" : "false";
 		o += ",\"hold\":";
 		o += hold[t] ? "true" : "false";
+		o += ",\"lock\":";
+		o += trackLock[t] ? "true" : "false";
+		o += ",\"fixed\":";
+		o += pat.fixed[t] ? "true" : "false";
 		o += ",\"ab\":";
 		o += abOrig[t] ? "true" : "false";
 		o += ",\"vals\":[";
@@ -2028,24 +2568,39 @@ std::string Engine::fast() {
 	jnum(o, frac);
 	o += ",\"msgId\":";
 	jint(o, msgId);
+	o += ",\"pfOn\":[";
+	for (int i = 0; i < 16; i++) {
+		if (i)
+			o += ',';
+		jint(o, pfx.latched[i] ? 2 : pfx.held[i] ? 1 : 0);
+	}
+	o += "],\"linkPeers\":";
+	jint(o, linkPeers);
+	o += ",\"linkArmed\":";
+	o += linkArmed && running ? "true" : "false";
 	o += '}';
 	return o;
 }
 
 // ================================================================ storage
+// A project file: magic, version, a header for the project list (name, genre, tempo, pads, song), then the session.
 static const uint32_t SESSION_MAGIC = 0x58424e47;  // "GNBX"
-static const uint32_t SESSION_VERSION = 1;
+static const uint32_t SESSION_VERSION = 2;
 
-void Engine::saveSession() {
+std::vector<uint8_t> Engine::sessionBytes() {
 	Writer w;
-	std::string path;
-	{
-	std::lock_guard<std::recursive_mutex> lk(mtx);
-	if (!ready || dir.empty())
-		return;
-	path = dir + "/session.gbx";
 	w.u32(SESSION_MAGIC);
 	w.u32(SESSION_VERSION);
+	int used = 0, bars = 0;
+	for (int i = 0; i < NUM_PADS; i++)
+		used += slots[i].used ? 1 : 0;
+	for (const SongPart& sp : song)
+		bars += sp.bars;
+	w.str(projName);
+	w.i32(mainProfile);
+	w.f32(bpm);
+	w.i32(used);
+	w.i32(bars);
 	w.bytes(savePattern(pat));
 	w.i32(mainProfile);
 	for (int t = 0; t < NUM_TRACKS; t++)
@@ -2102,108 +2657,435 @@ void Engine::saveSession() {
 	w.u32((uint32_t) song.size());
 	for (const SongPart& p : song)
 		w.i32(p.pad), w.i32(p.bars), w.u32(p.fill);
+	// 1.1
+	w.i32(scaleSel);
+	for (int t = 0; t < NUM_TRACKS; t++)
+		w.u32(trackLock[t]);
+	return w.d;
+}
+
+bool Engine::sessionFromBytes(const std::vector<uint8_t>& d) {
+	Reader r(d);
+	if (r.u32() != SESSION_MAGIC)
+		return false;
+	uint32_t version = r.u32();
+	if (version < 1 || version > SESSION_VERSION)
+		return false;
+	if (version >= 2) {
+		std::string n = r.str();
+		if (!n.empty())
+			projName = n;
+		r.i32(), r.f32(), r.i32(), r.i32();  // the list's header
+	}
+	Pattern p;
+		if (!loadPattern(r.bytes(), p))
+			return false;
+		pat = p;
+		mainProfile = clampv(r.i32(), 0, numProfiles() - 1);
+		for (int t = 0; t < NUM_TRACKS; t++) {
+			int s = r.i32();
+			trackSel[t] = s < 0 ? -1 : clampv(s, 0, numProfiles() - 1);
+		}
+		key = clampv(r.i32(), 0, 11);
+		color = c01(r.f32());
+		swing = clampv(r.f32(), -1.f, 1.f);
+		mutateAmt = c01(r.f32());
+		lengthIdx = clampv(r.i32(), 0, 3);
+		bpm = clampv(r.f32(), 40.f, 220.f);
+		chordLock = r.u32() != 0;
+		for (int t = 0; t < NUM_TRACKS; t++)
+			density[t] = c01(r.f32());
+		fillK = c01(r.f32());
+		moveK = c01(r.f32());
+		rangeK = c01(r.f32());
+		voicingK = c01(r.f32());
+		soundOn = r.u32() != 0;
+		soundAll = r.i32() == 1 ? 1 : 2;
+		master = c01(r.f32());
+		duck = c01(r.f32());
+		for (int t = 0; t < NUM_TRACKS; t++) {
+			int pr = r.i32();
+			float ma = r.f32(), mb = r.f32(), lv = r.f32();
+			bool mu = r.u32() != 0, ho = r.u32() != 0;
+			float g = r.f32();
+			std::vector<float> v(r.u32());
+			if (v.size() > 64)
+				return false;
+			for (float& x : v)
+				x = r.f32();
+			std::vector<float> o(r.u32());
+			if (o.size() > 64)
+				return false;
+			for (float& x : o)
+				x = r.f32();
+			if (!r.ok)
+				return false;
+			macA[t] = c01(ma), macB[t] = c01(mb), level[t] = c01(lv), mute[t] = mu, hold[t] = ho;
+			if (t == T_DRUMS)
+				preset[t] = clampv(pr, 0, presetCount(t) - 1), dxKit = preset[t];
+			else {
+				loadPreset(t, pr);
+				if (v.size() == defsOf(t).size())
+					vals[t] = v;
+				if (o.size() == defsOf(t).size())
+					orig[t] = o;
+				gain[t] = g > 0.f ? g : gain[t];
+				dirty[t] = true;
+			}
+		}
+		std::vector<uint8_t> kit = r.bytes(), okit = r.bytes();
+		int dv[JDX_NP], dov[JDX_NP];
+		for (int j = 0; j < JDX_NP; j++)
+			dv[j] = r.i32(), dov[j] = r.i32();
+		for (int l = 0; l < JDX_NLANE; l++)
+			laneMute[l] = r.u32() != 0;
+		if (dx) {
+			if (preset[T_DRUMS] < factoryCount(T_DRUMS))
+				dx->load_kit((uint32_t) preset[T_DRUMS]);
+			if (kit.size() == dx->kit_size())
+				dx->kit_import(kit.data());
+			dxOrigKit = okit.size() == dx->kit_size() ? okit : kit;
+			for (int j = 0; j < JDX_NP; j++)
+				dxOrigVals[j] = clampv(dov[j], 0, 127), setDxParam(j, dv[j]);
+		}
+		for (int i = 0; i < NUM_PADS; i++)
+			if (!getSlot(r, slots[i]))
+				slots[i] = Slot();
+		for (int t = 0; t < NUM_TRACKS; t++)
+			trackMode[t] = clampv(r.i32(), 0, 2);
+		uint32_t n = r.u32();
+		song.clear();
+		for (uint32_t k = 0; k < n && k < 64 && r.ok; k++) {
+			SongPart p;
+			p.pad = clampv(r.i32(), 0, NUM_PADS - 1);
+			p.bars = clampv(r.i32(), 1, 64);
+			p.fill = r.u32() != 0;
+			song.push_back(p);
+		}
+		if (!r.ok)
+			song.clear();
+		scaleSel = -1;
+	for (int t = 0; t < NUM_TRACKS; t++)
+		trackLock[t] = false;
+	if (version >= 2) {
+		int sc = r.i32();
+		scaleSel = sc < 0 ? -1 : clampv(sc, 0, NUM_SCALES - 1);
+		for (int t = 0; t < NUM_TRACKS; t++)
+			trackLock[t] = r.u32() != 0;
+		if (!r.ok)
+			scaleSel = -1;
+	}
+	layoutTimeline(pat, lengthSteps());
+	undoStack.clear();
+	redoStack.clear();
+	playingSlot = -1;
+	cueQ.on = false;
+	cuedSlot = -1;
+	songOn = false;
+	songPos = -1;
+	return true;
+}
+
+static std::string jsonEsc(const std::string& s) {
+	std::string o;
+	jstr(o, s);
+	return o;
+}
+static bool isDir(const std::string& p) {
+	struct stat st;
+	return stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+std::string Engine::projectPath(const std::string& id) const { return dir + "/projects/" + id + ".gbx"; }
+
+std::string Engine::newId() {
+	char b[40];
+	std::snprintf(b, sizeof b, "p%lld%04u", (long long) std::time(nullptr), (unsigned) (rng.next() % 10000u));
+	return b;
+}
+
+void Engine::saveSession() {
+	std::vector<uint8_t> d;
+	std::string path;
+	{
+		std::lock_guard<std::recursive_mutex> lk(mtx);
+		if (!ready || dir.empty() || projId.empty())
+			return;
+		path = projectPath(projId);
+		d = sessionBytes();
 	}
 	// the file is written outside the lock: the audio thread never waits for the storage
 	std::lock_guard<std::mutex> fl(fileMtx);
-	writeFile(path, w.d);
+	writeFile(path, d);
+	writeFile(dir + "/current.txt", std::vector<uint8_t>(projId.begin(), projId.end()));
 }
 
+/** The project that was open (or the 1.0 session, which becomes the first project). */
 bool Engine::loadSession() {
-	std::vector<uint8_t> d;
-	if (dir.empty() || !readFile(dir + "/session.gbx", d))
+	if (dir.empty())
 		return false;
-	Reader r(d);
-	if (r.u32() != SESSION_MAGIC || r.u32() != SESSION_VERSION)
-		return false;
-	Pattern p;
-	if (!loadPattern(r.bytes(), p))
-		return false;
-	pat = p;
-	mainProfile = clampv(r.i32(), 0, numProfiles() - 1);
-	for (int t = 0; t < NUM_TRACKS; t++) {
-		int s = r.i32();
-		trackSel[t] = s < 0 ? -1 : clampv(s, 0, numProfiles() - 1);
-	}
-	key = clampv(r.i32(), 0, 11);
-	color = c01(r.f32());
-	swing = clampv(r.f32(), -1.f, 1.f);
-	mutateAmt = c01(r.f32());
-	lengthIdx = clampv(r.i32(), 0, 3);
-	bpm = clampv(r.f32(), 40.f, 220.f);
-	chordLock = r.u32() != 0;
-	for (int t = 0; t < NUM_TRACKS; t++)
-		density[t] = c01(r.f32());
-	fillK = c01(r.f32());
-	moveK = c01(r.f32());
-	rangeK = c01(r.f32());
-	voicingK = c01(r.f32());
-	soundOn = r.u32() != 0;
-	soundAll = r.i32() == 1 ? 1 : 2;
-	master = c01(r.f32());
-	duck = c01(r.f32());
-	for (int t = 0; t < NUM_TRACKS; t++) {
-		int pr = r.i32();
-		float ma = r.f32(), mb = r.f32(), lv = r.f32();
-		bool mu = r.u32() != 0, ho = r.u32() != 0;
-		float g = r.f32();
-		std::vector<float> v(r.u32());
-		if (v.size() > 64)
-			return false;
-		for (float& x : v)
-			x = r.f32();
-		std::vector<float> o(r.u32());
-		if (o.size() > 64)
-			return false;
-		for (float& x : o)
-			x = r.f32();
-		if (!r.ok)
-			return false;
-		macA[t] = c01(ma), macB[t] = c01(mb), level[t] = c01(lv), mute[t] = mu, hold[t] = ho;
-		if (t == T_DRUMS)
-			preset[t] = clampv(pr, 0, presetCount(t) - 1), dxKit = preset[t];
-		else {
-			loadPreset(t, pr);
-			if (v.size() == defsOf(t).size())
-				vals[t] = v;
-			if (o.size() == defsOf(t).size())
-				orig[t] = o;
-			gain[t] = g > 0.f ? g : gain[t];
-			dirty[t] = true;
+	mkdir((dir + "/projects").c_str(), 0755);
+	std::vector<uint8_t> d, cur;
+	if (readFile(dir + "/current.txt", cur)) {
+		std::string id(cur.begin(), cur.end());
+		if (!id.empty() && readFile(projectPath(id), d) && sessionFromBytes(d)) {
+			projId = id;
+			return true;
 		}
 	}
-	std::vector<uint8_t> kit = r.bytes(), okit = r.bytes();
-	int dv[JDX_NP], dov[JDX_NP];
-	for (int j = 0; j < JDX_NP; j++)
-		dv[j] = r.i32(), dov[j] = r.i32();
+	if (readFile(dir + "/session.gbx", d) && sessionFromBytes(d)) {
+		projId = newId();
+		projName = "PROJECT 1";
+		writeFile(projectPath(projId), sessionBytes());
+		writeFile(dir + "/current.txt", std::vector<uint8_t>(projId.begin(), projId.end()));
+		std::remove((dir + "/session.gbx").c_str());
+		return true;
+	}
+	return false;
+}
+
+/** A fresh box: UK Garage, a pattern and the presets of its genre, empty pads. */
+void Engine::resetFresh() {
+	initPattern(pat);
+	mainProfile = 0;
+	for (int g = 0; g < NUM_GENRES; g++)
+		if (numVariants(g) > 0 && std::string(prof(profileOf(g, 0)).name) == "UK Garage")
+			mainProfile = profileOf(g, 0);
+	bpm = prof(mainProfile).bpm;
+	key = 9;
+	scaleSel = -1;
+	color = 0.5f, swing = 0.f, mutateAmt = 0.f;
+	lengthIdx = 2;
+	chordLock = false;
+	for (int t = 0; t < NUM_TRACKS; t++) {
+		trackSel[t] = -1;
+		trackLock[t] = false;
+		density[t] = 0.5f;
+		macA[t] = macB[t] = 0.5f;
+		level[t] = 0.75f;
+		mute[t] = hold[t] = false;
+		trackMode[t] = t <= T_BASS ? 1 : 0;
+	}
+	fillK = 0.3f, moveK = rangeK = voicingK = 0.5f;
+	master = 0.75f, duck = 0.f;
 	for (int l = 0; l < JDX_NLANE; l++)
-		laneMute[l] = r.u32() != 0;
-	if (dx) {
-		if (preset[T_DRUMS] < factoryCount(T_DRUMS))
-			dx->load_kit((uint32_t) preset[T_DRUMS]);
-		if (kit.size() == dx->kit_size())
-			dx->kit_import(kit.data());
-		dxOrigKit = okit.size() == dx->kit_size() ? okit : kit;
-		for (int j = 0; j < JDX_NP; j++)
-			dxOrigVals[j] = clampv(dov[j], 0, 127), setDxParam(j, dv[j]);
-	}
+		laneMute[l] = false;
 	for (int i = 0; i < NUM_PADS; i++)
-		if (!getSlot(r, slots[i]))
-			slots[i] = Slot();
-	for (int t = 0; t < NUM_TRACKS; t++)
-		trackMode[t] = clampv(r.i32(), 0, 2);
-	uint32_t n = r.u32();
+		slots[i] = Slot();
 	song.clear();
-	for (uint32_t k = 0; k < n && k < 64 && r.ok; k++) {
-		SongPart p;
-		p.pad = clampv(r.i32(), 0, NUM_PADS - 1);
-		p.bars = clampv(r.i32(), 1, 64);
-		p.fill = r.u32() != 0;
-		song.push_back(p);
+	songOn = false;
+	songPos = -1;
+	playingSlot = cuedSlot = -1;
+	cueQ.on = false;
+	arrMods = ArrMods();
+	padUndo.clear();
+	undoStack.clear();
+	redoStack.clear();
+	running = false;
+	restart();
+	for (int t = 0; t < NUM_TRACKS; t++)
+		loadPreset(t, 0);
+	doGenerate(true);
+	for (int t = 0; t < NUM_TRACKS; t++)
+		rollPreset(t);
+}
+
+std::string Engine::projects() {
+	std::lock_guard<std::recursive_mutex> lk(mtx);
+	struct Item {
+		std::string id, name;
+		int profile, pads, bars;
+		float bpm;
+		long long mtime;
+	};
+	std::vector<Item> items;
+	std::string pdir = dir + "/projects";
+	if (DIR* dd = opendir(pdir.c_str())) {
+		while (dirent* e = readdir(dd)) {
+			std::string f = e->d_name;
+			if (f.size() < 5 || f.compare(f.size() - 4, 4, ".gbx") != 0)
+				continue;
+			std::string id = f.substr(0, f.size() - 4);
+			std::vector<uint8_t> d;
+			if (!readFile(pdir + "/" + f, d))
+				continue;
+			Reader r(d);
+			if (r.u32() != SESSION_MAGIC || r.u32() < 2)
+				continue;
+			Item it;
+			it.id = id;
+			it.name = r.str();
+			it.profile = clampv(r.i32(), 0, numProfiles() - 1);
+			it.bpm = r.f32();
+			it.pads = r.i32();
+			it.bars = r.i32();
+			struct stat st;
+			it.mtime = stat((pdir + "/" + f).c_str(), &st) == 0 ? (long long) st.st_mtime : 0;
+			if (r.ok)
+				items.push_back(it);
+		}
+		closedir(dd);
 	}
+	std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.mtime > b.mtime; });
+	std::string o = "{\"current\":" + jsonEsc(projId) + ",\"list\":[";
+	for (size_t k = 0; k < items.size(); k++) {
+		const Item& it = items[k];
+		if (k)
+			o += ',';
+		o += "{\"id\":" + jsonEsc(it.id) + ",\"name\":" + jsonEsc(it.name) + ",\"genre\":" + jsonEsc(prof(it.profile).name);
+		o += ",\"bpm\":";
+		jnum(o, it.bpm);
+		o += ",\"pads\":";
+		jint(o, it.pads);
+		o += ",\"bars\":";
+		jint(o, it.bars);
+		o += ",\"time\":";
+		jint(o, it.mtime);
+		o += '}';
+	}
+	o += "]}";
+	return o;
+}
+
+static std::string cleanName(std::string n) {
+	for (char& c : n)
+		if (c >= 'a' && c <= 'z')
+			c = (char) (c - 'a' + 'A');
+	while (!n.empty() && n.back() == ' ')
+		n.pop_back();
+	if (n.size() > 24)
+		n.resize(24);
+	return n;
+}
+
+void Engine::projectOpen(const std::string& id) {
+	saveSession();
+	std::lock_guard<std::recursive_mutex> lk(mtx);
+	std::vector<uint8_t> d;
+	if (id.find('/') != std::string::npos || !readFile(projectPath(id), d)) {
+		say("The project can't be read");
+		return;
+	}
+	running = false;
+	restart();
+	std::string oldName = projName;
+	if (!sessionFromBytes(d)) {
+		projName = oldName;
+		say("The project can't be read");
+		return;
+	}
+	projId = id;
+	writeFile(dir + "/current.txt", std::vector<uint8_t>(projId.begin(), projId.end()));
+	say("Opened: " + projName);
+}
+
+void Engine::projectNew() {
+	saveSession();
+	std::lock_guard<std::recursive_mutex> lk(mtx);
+	resetFresh();
+	projId = newId();
+	// the next free "PROJECT n"
+	std::string list = projects();
+	int n = 1;
+	while (list.find("\"PROJECT " + std::to_string(n) + "\"") != std::string::npos)
+		n++;
+	projName = "PROJECT " + std::to_string(n);
+	writeFile(projectPath(projId), sessionBytes());
+	writeFile(dir + "/current.txt", std::vector<uint8_t>(projId.begin(), projId.end()));
+	say("New project: " + projName);
+}
+
+void Engine::projectSaveAs(const std::string& name) {
+	std::lock_guard<std::recursive_mutex> lk(mtx);
+	saveSession();
+	projId = newId();
+	projName = cleanName(name).empty() ? projName + " COPY" : cleanName(name);
+	writeFile(projectPath(projId), sessionBytes());
+	writeFile(dir + "/current.txt", std::vector<uint8_t>(projId.begin(), projId.end()));
+	say("Saved as: " + projName);
+}
+
+void Engine::projectRename(const std::string& name) {
+	std::lock_guard<std::recursive_mutex> lk(mtx);
+	std::string n = cleanName(name);
+	if (n.empty())
+		return;
+	projName = n;
+	writeFile(projectPath(projId), sessionBytes());
+	say("Renamed: " + projName);
+}
+
+void Engine::projectDuplicate(const std::string& id) {
+	std::lock_guard<std::recursive_mutex> lk(mtx);
+	saveSession();
+	std::vector<uint8_t> d;
+	if (id.find('/') != std::string::npos || !readFile(projectPath(id), d))
+		return;
+	// the copy keeps everything; its name gets " COPY"
+	Reader r(d);
+	r.u32(), r.u32();
+	std::string name = r.str();
+	Writer w;
+	w.u32(SESSION_MAGIC);
+	w.u32(SESSION_VERSION);
+	std::string nn = cleanName(name + " COPY");
+	w.str(nn);
+	w.d.insert(w.d.end(), d.begin() + r.p, d.end());
+	writeFile(projectPath(newId()), w.d);
+	say("Duplicated: " + nn);
+}
+
+void Engine::projectDelete(const std::string& id) {
+	std::lock_guard<std::recursive_mutex> lk(mtx);
+	if (id.find('/') != std::string::npos)
+		return;
+	if (id == projId) {
+		say("The open project can't be deleted");
+		return;
+	}
+	std::remove(projectPath(id).c_str());
+	say("Project deleted");
+}
+
+// the settings of the app (not of a project): PERFORM pads and targets, Ableton Link
+static const uint32_t SETTINGS_MAGIC = 0x54455347;  // "GSET"
+
+void Engine::saveSettings() {
+	if (dir.empty())
+		return;
+	Writer w;
+	w.u32(SETTINGS_MAGIC);
+	w.u32(1);
+	for (int i = 0; i < 16; i++)
+		w.i32(pfx.assign[i]);
+	w.u32(pfTarget);
+	w.u32(linkEnabled);
+	w.u32(linkStartStop);
+	w.f32(linkOffsetMs);
+	writeFile(dir + "/settings.gbx", w.d);
+}
+
+void Engine::loadSettings() {
+	std::vector<uint8_t> d;
+	if (dir.empty() || !readFile(dir + "/settings.gbx", d))
+		return;
+	Reader r(d);
+	if (r.u32() != SETTINGS_MAGIC || r.u32() != 1)
+		return;
+	int as[16];
+	for (int i = 0; i < 16; i++)
+		as[i] = r.i32();
+	unsigned tg = r.u32();
+	bool le = r.u32() != 0, ls = r.u32() != 0;
+	float off = r.f32();
 	if (!r.ok)
-		song.clear();
-	layoutTimeline(pat, lengthSteps());
-	return true;
+		return;
+	for (int i = 0; i < 16; i++)
+		pfx.assign[i] = clampv(as[i], 0, NUM_FX - 1);
+	pfTarget = tg & 0xF;
+	linkEnabled = le;
+	linkStartStop = ls;
+	linkOffsetMs = clampv(off, -100.f, 300.f);
 }
 
 static const uint32_t USER_MAGIC = 0x52535550;  // "PUSR"

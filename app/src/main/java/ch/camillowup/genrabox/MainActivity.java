@@ -7,6 +7,7 @@ import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.graphics.Color;
 import android.net.Uri;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -31,6 +32,28 @@ import java.util.Locale;
 /** GENRA BOX: the engine plays in native code, the panel is a page in a WebView (assets/ui). */
 public class MainActivity extends Activity {
     private WebView web;
+    private WifiManager.MulticastLock multicast;
+
+    /** Ableton Link finds the others by multicast on the Wi-Fi: Android lets it through only with this lock. */
+    private void setMulticast(boolean on) {
+        try {
+            if (on) {
+                if (multicast == null) {
+                    WifiManager wm = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+                    if (wm == null)
+                        return;
+                    multicast = wm.createMulticastLock("GenraBoxLink");
+                    multicast.setReferenceCounted(false);
+                }
+                if (!multicast.isHeld())
+                    multicast.acquire();
+            } else if (multicast != null && multicast.isHeld()) {
+                multicast.release();
+            }
+        } catch (Exception e) {
+            // without the lock Link may still find others on some phones
+        }
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -86,6 +109,7 @@ public class MainActivity extends Activity {
     protected void onStart() {
         super.onStart();
         Native.start();
+        setMulticast(Native.linkOn());
     }
 
     @Override
@@ -98,6 +122,7 @@ public class MainActivity extends Activity {
     protected void onStop() {
         Native.stop();
         Native.save();
+        setMulticast(false);
         super.onStop();
     }
 
@@ -149,7 +174,15 @@ public class MainActivity extends Activity {
         @JavascriptInterface public String meta() { return Native.meta(); }
         @JavascriptInterface public String state(int known) { return Native.state(known); }
         @JavascriptInterface public String fast() { return Native.fast(); }
-        @JavascriptInterface public void cmd(int op, int a, int b, float f) { Native.cmd(op, a, b, f); }
+        @JavascriptInterface public void cmd(int op, int a, int b, float f) {
+            Native.cmd(op, a, b, f);
+            if (op == 95)  // OP_LINK_ON
+                setMulticast(a != 0);
+        }
+        @JavascriptInterface public String gridState(int track, int from, int n) { return Native.gridState(track, from, n); }
+        @JavascriptInterface public void gridWrite(int track, String json) { Native.gridWrite(track, json); }
+        @JavascriptInterface public String projects() { return Native.projects(); }
+        @JavascriptInterface public void project(int what, String arg) { Native.project(what, arg); }
         @JavascriptInterface public void savePreset(int track, String name) { Native.savePreset(track, name); }
         @JavascriptInterface public void save() { Native.save(); }
         @JavascriptInterface public String audioInfo() { return Native.audioInfo(); }

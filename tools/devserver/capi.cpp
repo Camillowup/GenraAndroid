@@ -38,6 +38,20 @@ float gb_render(int n) {
 	}
 	return peak;
 }
+char* gb_grid_state(int t, int f, int n) { return dup(E()->gridState(t, f, n)); }
+void gb_grid_write(int t, const char* js) { E()->gridWrite(t, js); }
+char* gb_projects() { return dup(E()->projects()); }
+void gb_project(int w, const char* a) {
+	std::string s = a;
+	switch (w) {
+		case 0: E()->projectOpen(s); break;
+		case 1: E()->projectNew(); break;
+		case 2: E()->projectSaveAs(s); break;
+		case 3: E()->projectRename(s); break;
+		case 4: E()->projectDuplicate(s); break;
+		case 5: E()->projectDelete(s); break;
+	}
+}
 int gb_export(int what, int idx, unsigned char* out, int cap) {
 	std::string name;
 	std::vector<uint8_t> d = E()->exportMidi(what, idx, name);

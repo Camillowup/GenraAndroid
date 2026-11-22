@@ -26,5 +26,25 @@ add_library(genrabox SHARED
 	genra-src/genra/Midi.cpp
 	genra-src/genra/Store.cpp
 )
-target_compile_options(genrabox PRIVATE ${OPT} -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable)
+target_compile_options(genrabox PRIVATE ${OPT} -fexceptions -frtti -Wall -Wno-unused-function -Wno-unused-variable
+	-Wno-unused-but-set-variable -Wno-multichar)
 target_link_libraries(genrabox drumx aaudio log m)
+
+# ---- Ableton Link (GPLv2+, github.com/Ableton/link): tempo, beat and start / stop with other apps on the Wi-Fi.
+# Fetched when the build is configured (with its asio submodule); the Linux platform code runs on Android.
+include(FetchContent)
+FetchContent_Declare(ableton_link
+	GIT_REPOSITORY https://github.com/Ableton/link.git
+	GIT_TAG Link-3.1.5
+	GIT_SHALLOW TRUE
+	GIT_SUBMODULES modules/asio-standalone
+)
+FetchContent_GetProperties(ableton_link)
+if(NOT ableton_link_POPULATED)
+	FetchContent_Populate(ableton_link)
+endif()
+target_include_directories(genrabox PRIVATE
+	${ableton_link_SOURCE_DIR}/include
+	${ableton_link_SOURCE_DIR}/modules/asio-standalone/asio/include
+)
+target_compile_definitions(genrabox PRIVATE GENRA_LINK=1 LINK_PLATFORM_UNIX=1 LINK_PLATFORM_LINUX=1)
