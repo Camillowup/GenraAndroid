@@ -11,6 +11,7 @@
 #include <ctime>
 
 #include "../genra-src/GenreMatch.hpp"
+#include "../genra-src/ui/SoundGroups.hpp"
 
 extern "C" const jdx_api* jdx_get(void);
 
@@ -1865,13 +1866,17 @@ std::string Engine::state(int known) {
 				o += ',';
 			jstr(o, presetName(t, i));
 		}
-		o += "],\"styles\":[";
+		// the preset lists by sound (as GENRA 2.41: FUNKE and SCHMELZ in BASS, LEAD, PAD, KEYS, FX; MONO and the kits
+		// one list); the genre stays inside for SOUND: SAME GENRE
+		o += "],\"groups\":[";
 		int fc = factoryCount(t);
 		for (int i = 0; i < fc; i++) {
 			if (i)
 				o += ',';
-			const char* st = t == T_BASS ? gmono::PRESETS[i].style : t == T_MELODY ? gfunke::PRESETS[i].style : t == T_PADS ? gschmelz::PRESETS[i].style : "DRUM-X";
-			jstr(o, st);
+			const char* g = t == T_MELODY ? genra_groups::of(genra_groups::FUNKE, genra_groups::N_FUNKE, gfunke::PRESETS[i].name)
+			              : t == T_PADS ? genra_groups::of(genra_groups::SCHMELZ, genra_groups::N_SCHMELZ, gschmelz::PRESETS[i].name)
+			              : "";
+			jstr(o, g);
 		}
 		o += "]}";
 	}

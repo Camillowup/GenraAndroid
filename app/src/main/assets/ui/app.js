@@ -331,13 +331,16 @@ function pickTrackGenre(t) {
 function pickPreset(t) {
   const tr = st.tracks[t];
   const groups = [];
-  const byStyle = new Map();
+  // by sound (BASS, LEAD, PAD, KEYS, FX) where the synth has groups, else one list in the presets' order
+  const ORDER = ['BASS', 'LEAD', 'PAD', 'KEYS', 'FX'];
+  const byGroup = new Map();
   for (let i = 0; i < tr.factory; i++) {
-    const s = t === 0 ? 'KITS' : (tr.styles[i] || '');
-    if (!byStyle.has(s)) byStyle.set(s, []);
-    byStyle.get(s).push({ label: tr.presets[i], value: i });
+    const g = (tr.groups && tr.groups[i]) || '';
+    if (!byGroup.has(g)) byGroup.set(g, []);
+    byGroup.get(g).push({ label: tr.presets[i], value: i });
   }
-  for (const [name, items] of byStyle) groups.push({ name, items });
+  const names = [...byGroup.keys()].sort((a, b) => (ORDER.indexOf(a) + 1 || 99) - (ORDER.indexOf(b) + 1 || 99));
+  for (const name of names) groups.push({ name, items: byGroup.get(name) });
   const user = [];
   for (let i = tr.factory; i < tr.presetCount; i++)
     user.push({ label: tr.presets[i], sub: 'YOUR PRESET', value: i, color: TC[t], del: () => cmd(OP.PRESET_DELETE, t, i) });
